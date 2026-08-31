@@ -1,145 +1,134 @@
-import os
-
-from sqlalchemy import Integer, String, select
-from sqlalchemy.ext.asyncio import (
-    AsyncSession,
-    async_sessionmaker,
-    create_async_engine,
-)
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+import sqlite3
+from pathlib import Path
 
 
-DATABASE_URL = os.getenv("DATABASE_URL")
-
-if not DATABASE_URL:
-    raise RuntimeError("Не задан DATABASE_URL")
+DB_PATH = Path("camp_wars.db")
 
 
-# Render PostgreSQL обычно отдаёт URL в формате:
-# postgresql://...
-#
-# SQLAlchemy async требует:
-# postgresql+asyncpg://...
+TEAMS = [
+    "🐻 Медведи",
+    "🦊 Лисы",
+    "🐺 Волки",
+    "🦁 Львы",
+    "🐯 Тигры",
+    "🐼 Панды",
+    "🐸 Лягушки",
+    "🦅 Орлы",
+    "🦄 Единороги",
+    "🦈 Акулы",
+]
 
-if DATABASE_URL.startswith("postgresql://"):
-    DATABASE_URL = DATABASE_URL.replace(
-        "postgresql://",
-        "postgresql+asyncpg://",
-        1,
+
+def get_connection():
+
+    connection = sqlite3.connect(
+        DB_PATH
     )
 
+    connection.row_factory = sqlite3.Row
 
-engine = create_async_engine(
-    DATABASE_URL,
-    echo=False,
-)
+    return connection
 
 
-SessionLocal = async_sessionmaker(
-    engine,
-    expire_on_commit=False,
-)
+def init_database():
 
+    connection = get_connection()
 
-class Base(DeclarativeBase):
-    pass
+    cursor = connection.cursor()
 
-
-class Team(Base):
-    __tablename__ = "teams"
-
-    id: Mapped[int] = mapped_column(
-        Integer,
-        primary_key=True,
-    )
-
-    name: Mapped[str] = mapped_column(
-        String(100),
-        unique=True,
-        nullable=False,
-    )
-
-    score: Mapped[int] = mapped_column(
-        Integer,
-        default=0,
-        nullable=False,
-    )
-
-
-async def init_database():
-
-    async with engine.begin() as connection:
-
-        await connection.run_sync(
-            Base.metadata.create_all
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS teams (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT UNIQUE NOT NULL,
+            score INTEGER NOT NULL DEFAULT 0
         )
+        """
+    )
 
-    async with SessionLocal() as session:
+    cursor.execute(
+        "SELECT COUNT(*) FROM teams"
+    )
 
-        result = await session.execute(
-            select(Team)
-        )
+    count = cursor.fetchone()[0]
 
-        teams = result.scalars().all()
+    if count == 0:
 
-        if teams:
-            return
+        for team in TEAMS:
 
-        team_names = [
-            "🐻 Медведи",
-            "🦊 Лисы",
-            "🐺 Волки",
-            "🦁 Львы",
-            "🐯 Тигры",
-            "🐼 Панды",
-            "🐸 Лягушки",
-            "🦅 Орлы",
-            "🦄 Единороги",
-            "🦈 Акулы",
-        ]
-
-        for name in team_names:
-
-            session.add(
-                Team(
-                    name=name,
-                    score=0,
-                )
+            cursor.execute(
+                """
+                INSERT INTO teams (name, score)
+                VALUES (?, 0)
+                """,
+                (team,),
             )
 
-        await session.commit()
+    connection.commit()
+
+    connection.close()
 
 
-async def add_points(
+def add_points(
     team_name: str,
     points: int,
 ):
 
-    async with SessionLocal() as session:
+    connection = get_connection()
 
-        result = await session.execute(
-            select(Team).where(
-                Team.name == team_name
-            )
+    cursor = connection.cursor()
+
+    cursor.execute(
+        """
+        UPDATE teams
+        SET score = score + ?
+        WHERE name = ?
+        """,
+        (
+            points,
+            team_name,
+        ),
+    )
+
+    connection.commit()
+
+    cursor.execute(
+        """
+        SELECT score
+        FROM teams
+        WHERE name = ?
+        """,
+        (team_name,),
+    )
+
+    row = cursor.fetchone()
+
+    connection.close()
+
+    if row is None:
+        raise ValueError(
+            f"Команда не найдена: {team_name}"
         )
 
-        team = result.scalar_one()
-
-        team.score += points
-
-        await session.commit()
-
-        return team.score
+    return row["score"]
 
 
-async def get_scores():
+def get_scores():
 
-    async with SessionLocal() as session:
+    connection = get_connection()
 
-        result = await session.execute(
-            select(Team).order_by(
-                Team.score.desc()
-            )
-        )
+    cursor = connection.cursor()
 
-        return result.scalars().all()
+    cursor.execute(
+        """
+        SELECT name, score
+        FROM teams
+        ORDER BY score DESC
+        """
+    )
+
+    teams = cursor.fetchall()
+
+    connection.close()
+
+    return teams
