@@ -1,4 +1,3 @@
-```python
 import os
 from datetime import datetime
 
@@ -862,4 +861,3 @@ def get_issued_missions(
             )
 
         return result
-```
