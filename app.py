@@ -1,3 +1,4 @@
+```python
 import os
 import asyncio
 import logging
@@ -19,13 +20,6 @@ from database import (
 # ============================================================
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-
-ADMIN_IDS = {
-    int(user_id.strip())
-    for user_id in os.getenv("ADMIN_IDS", "").split(",")
-    if user_id.strip()
-}
-
 
 if not BOT_TOKEN:
     raise RuntimeError("Не задан BOT_TOKEN")
@@ -53,9 +47,6 @@ TEAMS = [
 # АКТИВНОСТИ
 # ============================================================
 
-# Обычные мероприятия.
-# Победитель получает 100 очков.
-
 NORMAL_ACTIVITIES = [
     "🏓 Пинг-понг",
     "🏐 Волейбол",
@@ -65,9 +56,6 @@ NORMAL_ACTIVITIES = [
     "🎲 Настольные игры",
 ]
 
-
-# Большие мероприятия.
-# Очки получают только 1, 2 и 3 места.
 
 TOURNAMENT_ACTIVITIES = [
     "🏆 Большой турнир по пинг-понгу",
@@ -81,21 +69,13 @@ TOURNAMENT_ACTIVITIES = [
 # СИСТЕМА ОЧКОВ
 # ============================================================
 
-# Обычная победа
-
 NORMAL_WIN_POINTS = 100
-
-
-# Большой турнир
 
 TOURNAMENT_POINTS = {
     1: 1000,
     2: 600,
     3: 350,
 }
-
-
-# Гранд-финал
 
 FINAL_POINTS = {
     1: 2000,
@@ -120,26 +100,30 @@ dp = Dispatcher()
 
 
 # ============================================================
-# ВРЕМЕННОЕ СОСТОЯНИЕ
+# СОСТОЯНИЕ ПОЛЬЗОВАТЕЛЕЙ
 # ============================================================
-
-# Здесь бот запоминает:
-#
-# какой администратор
-# какую команду
-# какую активность
-#
-# выбрал в данный момент.
 
 user_state = {}
 
 
 # ============================================================
-# ПРОВЕРКА ДОСТУПА
+# ДОСТУП
 # ============================================================
 
+# Сейчас доступ открыт абсолютно всем.
+#
+# Любой человек может:
+# - открыть бота;
+# - посмотреть таблицу;
+# - записать результат.
+#
+# Для тестирования это удобно.
+#
+# Перед лагерем обязательно вернём
+# ограничение на запись результатов.
+
 def is_admin(user_id: int) -> bool:
-    return user_id in ADMIN_IDS
+    return True
 
 
 # ============================================================
@@ -166,7 +150,7 @@ def main_keyboard():
 
 
 # ============================================================
-# ВЫБОР КОМАНДЫ
+# КОМАНДЫ
 # ============================================================
 
 def teams_keyboard():
@@ -186,14 +170,12 @@ def teams_keyboard():
 
 
 # ============================================================
-# ВЫБОР АКТИВНОСТИ
+# АКТИВНОСТИ
 # ============================================================
 
 def activities_keyboard():
 
     builder = InlineKeyboardBuilder()
-
-    # Обычные активности
 
     for index, activity in enumerate(
         NORMAL_ACTIVITIES
@@ -203,8 +185,6 @@ def activities_keyboard():
             text=activity,
             callback_data=f"normal:{index}",
         )
-
-    # Большие турниры
 
     for index, activity in enumerate(
         TOURNAMENT_ACTIVITIES
@@ -221,7 +201,7 @@ def activities_keyboard():
 
 
 # ============================================================
-# РЕЗУЛЬТАТ ОБЫЧНОГО МАТЧА
+# ОБЫЧНЫЙ МАТЧ
 # ============================================================
 
 def normal_result_keyboard():
@@ -244,7 +224,7 @@ def normal_result_keyboard():
 
 
 # ============================================================
-# РЕЗУЛЬТАТ БОЛЬШОГО ТУРНИРА
+# БОЛЬШОЙ ТУРНИР
 # ============================================================
 
 def tournament_result_keyboard():
@@ -277,7 +257,7 @@ def tournament_result_keyboard():
 
 
 # ============================================================
-# ФОРМИРОВАНИЕ ТАБЛО
+# ТАБЛО
 # ============================================================
 
 def build_scoreboard(teams):
@@ -321,25 +301,15 @@ async def start(
     message: Message,
 ):
 
-    user_id = message.from_user.id
-
-    if not is_admin(user_id):
-
-        await message.answer(
-            "⛔ Доступ закрыт."
-        )
-
-        return
-
     await message.answer(
         "🔥 CAMP WARS\n\n"
-        "Панель управления результатами:",
+        "Панель управления:",
         reply_markup=main_keyboard(),
     )
 
 
 # ============================================================
-# НАЖАЛИ «ЗАПИСАТЬ РЕЗУЛЬТАТ»
+# ЗАПИСАТЬ РЕЗУЛЬТАТ
 # ============================================================
 
 @dp.callback_query(
@@ -348,17 +318,6 @@ async def start(
 async def add_result_start(
     callback: CallbackQuery,
 ):
-
-    if not is_admin(
-        callback.from_user.id
-    ):
-
-        await callback.answer(
-            "⛔ Доступ закрыт",
-            show_alert=True,
-        )
-
-        return
 
     await callback.message.edit_text(
         "👥 Выберите команду:",
@@ -378,17 +337,6 @@ async def add_result_start(
 async def select_team(
     callback: CallbackQuery,
 ):
-
-    if not is_admin(
-        callback.from_user.id
-    ):
-
-        await callback.answer(
-            "⛔ Доступ закрыт",
-            show_alert=True,
-        )
-
-        return
 
     index = int(
         callback.data.split(":")[1]
@@ -424,17 +372,6 @@ async def select_activity(
     callback: CallbackQuery,
 ):
 
-    if not is_admin(
-        callback.from_user.id
-    ):
-
-        await callback.answer(
-            "⛔ Доступ закрыт",
-            show_alert=True,
-        )
-
-        return
-
     kind, index = callback.data.split(":")
 
     index = int(index)
@@ -452,9 +389,7 @@ async def select_activity(
 
         return
 
-    # --------------------------------------------------------
-    # ОБЫЧНАЯ АКТИВНОСТЬ
-    # --------------------------------------------------------
+    # Обычный матч
 
     if kind == "normal":
 
@@ -470,9 +405,7 @@ async def select_activity(
             reply_markup=normal_result_keyboard(),
         )
 
-    # --------------------------------------------------------
-    # БОЛЬШОЙ ТУРНИР
-    # --------------------------------------------------------
+    # Турнир
 
     else:
 
@@ -492,7 +425,7 @@ async def select_activity(
 
 
 # ============================================================
-# ОБЫЧНАЯ ПОБЕДА
+# ПОБЕДА В ОБЫЧНОМ МАТЧЕ
 # ============================================================
 
 @dp.callback_query(
@@ -501,17 +434,6 @@ async def select_activity(
 async def normal_win(
     callback: CallbackQuery,
 ):
-
-    if not is_admin(
-        callback.from_user.id
-    ):
-
-        await callback.answer(
-            "⛔ Доступ закрыт",
-            show_alert=True,
-        )
-
-        return
 
     state = user_state.get(
         callback.from_user.id
@@ -565,17 +487,6 @@ async def tournament_place(
     callback: CallbackQuery,
 ):
 
-    if not is_admin(
-        callback.from_user.id
-    ):
-
-        await callback.answer(
-            "⛔ Доступ закрыт",
-            show_alert=True,
-        )
-
-        return
-
     state = user_state.get(
         callback.from_user.id
     )
@@ -595,8 +506,6 @@ async def tournament_place(
 
     team = state["team"]
     activity = state["activity"]
-
-    # Для гранд-финала отдельная шкала
 
     if activity == "🔥 Гранд-финал":
 
@@ -648,17 +557,6 @@ async def scoreboard(
     callback: CallbackQuery,
 ):
 
-    if not is_admin(
-        callback.from_user.id
-    ):
-
-        await callback.answer(
-            "⛔ Доступ закрыт",
-            show_alert=True,
-        )
-
-        return
-
     teams = get_scores()
 
     await callback.message.edit_text(
@@ -687,7 +585,7 @@ async def cancel(
 
     await callback.message.edit_text(
         "🔥 CAMP WARS\n\n"
-        "Панель управления результатами:",
+        "Панель управления:",
         reply_markup=main_keyboard(),
     )
 
@@ -706,11 +604,7 @@ async def main():
         "🔥 CAMP WARS BOT STARTED"
     )
 
-    # Создаём SQLite-базу и 10 команд
-
     init_database()
-
-    # Запускаем Telegram polling
 
     await dp.start_polling(
         bot
@@ -726,3 +620,4 @@ if __name__ == "__main__":
     asyncio.run(
         main()
     )
+```
