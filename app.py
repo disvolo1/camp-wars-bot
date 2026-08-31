@@ -1,863 +1,1133 @@
+import asyncio
+import logging
 import os
-from datetime import datetime
+import random
 
-from sqlalchemy import (
-    create_engine,
-    Column,
-    Integer,
-    BigInteger,
-    String,
-    DateTime,
-    Text,
+from aiogram import Bot, Dispatcher, F
+from aiogram.filters import Command
+from aiogram.types import (
+    Message,
+    CallbackQuery,
+    InlineKeyboardMarkup,
+    InlineKeyboardButton,
 )
-from sqlalchemy.orm import declarative_base, sessionmaker
+from aiogram.exceptions import TelegramBadRequest
 
-
-# ============================================================
-# DATABASE
-# ============================================================
-
-DATABASE_URL = os.getenv("DATABASE_URL")
-
-if not DATABASE_URL:
-    raise RuntimeError("Не задан DATABASE_URL")
-
-# Render/PostgreSQL иногда отдаёт postgres://
-# SQLAlchemy использует postgresql://
-if DATABASE_URL.startswith("postgres://"):
-    DATABASE_URL = DATABASE_URL.replace(
-        "postgres://",
-        "postgresql://",
-        1,
-    )
-
-engine = create_engine(
-    DATABASE_URL,
-    pool_pre_ping=True,
+from database import (
+    init_database,
+    get_teams,
+    get_team,
+    rename_team,
+    add_points,
+    get_history,
+    save_user,
+    get_user,
+    set_user_team,
+    create_mission,
+    get_missions,
+    get_available_missions,
+    issue_mission,
+    get_active_mission_for_team,
 )
 
-SessionLocal = sessionmaker(
-    bind=engine,
-    expire_on_commit=False,
+
+# ============================================================
+# НАСТРОЙКИ
+# ============================================================
+
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+
+if not BOT_TOKEN:
+    raise RuntimeError("Не задан BOT_TOKEN")
+
+
+ADMIN_IDS = {
+    128835770,
+    994383,
+}
+
+
+# ============================================================
+# ЛОГИ
+# ============================================================
+
+logging.basicConfig(
+    level=logging.INFO
 )
 
-Base = declarative_base()
+logger = logging.getLogger(__name__)
 
 
 # ============================================================
-# КОМАНДЫ
+# BOT
 # ============================================================
 
-class Team(Base):
-    __tablename__ = "teams"
+bot = Bot(
+    token=BOT_TOKEN
+)
 
-    id = Column(
-        Integer,
-        primary_key=True,
-    )
-
-    name = Column(
-        String(100),
-        nullable=False,
-    )
-
-    score = Column(
-        Integer,
-        default=0,
-        nullable=False,
-    )
+dp = Dispatcher()
 
 
 # ============================================================
-# ПОЛЬЗОВАТЕЛИ / КАПИТАНЫ
+# ПРОВЕРКА АДМИНА
 # ============================================================
 
-class User(Base):
-    __tablename__ = "users"
-
-    id = Column(
-        BigInteger,
-        primary_key=True,
-    )
-
-    username = Column(
-        String(100),
-        nullable=True,
-    )
-
-    first_name = Column(
-        String(100),
-        nullable=True,
-    )
-
-    team_id = Column(
-        Integer,
-        nullable=True,
-    )
+def is_admin(user_id: int) -> bool:
+    return user_id in ADMIN_IDS
 
 
 # ============================================================
-# ИСТОРИЯ НАЧИСЛЕНИЙ
+# КЛАВИАТУРА АДМИНА
 # ============================================================
 
-class PointsHistory(Base):
-    __tablename__ = "points_history"
+def admin_keyboard():
 
-    id = Column(
-        Integer,
-        primary_key=True,
-    )
-
-    team_id = Column(
-        Integer,
-        nullable=False,
-    )
-
-    team_name = Column(
-        String(100),
-        nullable=False,
-    )
-
-    points = Column(
-        Integer,
-        nullable=False,
-    )
-
-    new_score = Column(
-        Integer,
-        nullable=False,
-    )
-
-    user_id = Column(
-        BigInteger,
-        nullable=False,
-    )
-
-    username = Column(
-        String(100),
-        nullable=True,
-    )
-
-    first_name = Column(
-        String(100),
-        nullable=True,
-    )
-
-    activity = Column(
-        String(255),
-        nullable=True,
-    )
-
-    result = Column(
-        String(255),
-        nullable=True,
-    )
-
-    created_at = Column(
-        DateTime,
-        default=datetime.utcnow,
-        nullable=False,
-    )
-
-
-# ============================================================
-# СЕКРЕТНЫЕ МИССИИ
-# ============================================================
-
-class Mission(Base):
-    __tablename__ = "missions"
-
-    id = Column(
-        Integer,
-        primary_key=True,
-    )
-
-    title = Column(
-        String(255),
-        nullable=False,
-    )
-
-    description = Column(
-        Text,
-        nullable=False,
-    )
-
-    points = Column(
-        Integer,
-        nullable=False,
-    )
-
-    created_at = Column(
-        DateTime,
-        default=datetime.utcnow,
-        nullable=False,
-    )
-
-
-# ============================================================
-# ВЫДАННЫЕ МИССИИ
-# ============================================================
-
-class IssuedMission(Base):
-    __tablename__ = "issued_missions"
-
-    id = Column(
-        Integer,
-        primary_key=True,
-    )
-
-    mission_id = Column(
-        Integer,
-        nullable=False,
-    )
-
-    team_id = Column(
-        Integer,
-        nullable=False,
-    )
-
-    issued_to_user_id = Column(
-        BigInteger,
-        nullable=True,
-    )
-
-    status = Column(
-        String(50),
-        default="active",
-        nullable=False,
-    )
-
-    issued_at = Column(
-        DateTime,
-        default=datetime.utcnow,
-        nullable=False,
-    )
-
-    completed_at = Column(
-        DateTime,
-        nullable=True,
-    )
-
-
-# ============================================================
-# СОЗДАНИЕ ТАБЛИЦ
-# ============================================================
-
-def init_database():
-
-    Base.metadata.create_all(
-        bind=engine
-    )
-
-    # Если команд ещё нет —
-    # создаём 10 стандартных команд.
-
-    with SessionLocal() as session:
-
-        existing = (
-            session.query(Team)
-            .count()
-        )
-
-        if existing == 0:
-
-            default_names = [
-                "Команда 1",
-                "Команда 2",
-                "Команда 3",
-                "Команда 4",
-                "Команда 5",
-                "Команда 6",
-                "Команда 7",
-                "Команда 8",
-                "Команда 9",
-                "Команда 10",
-            ]
-
-            for name in default_names:
-
-                session.add(
-                    Team(
-                        name=name,
-                        score=0,
-                    )
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="🏆 Табло",
+                    callback_data="scoreboard",
                 )
-
-            session.commit()
-
-
-# ============================================================
-# КОМАНДЫ
-# ============================================================
-
-def get_teams():
-
-    with SessionLocal() as session:
-
-        teams = (
-            session.query(Team)
-            .order_by(Team.id)
-            .all()
-        )
-
-        return [
-            {
-                "id": team.id,
-                "name": team.name,
-                "score": team.score,
-            }
-            for team in teams
+            ],
+            [
+                InlineKeyboardButton(
+                    text="🏅 За активность",
+                    callback_data="activity",
+                ),
+                InlineKeyboardButton(
+                    text="➕ Добавить баллы",
+                    callback_data="add_points",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="📜 История",
+                    callback_data="history",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="✏️ Команды",
+                    callback_data="teams",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="🕵️ Выдать задание",
+                    callback_data="issue_mission",
+                )
+            ],
         ]
-
-
-def get_team(team_id):
-
-    with SessionLocal() as session:
-
-        team = (
-            session.query(Team)
-            .filter(
-                Team.id == team_id
-            )
-            .first()
-        )
-
-        if not team:
-            return None
-
-        return {
-            "id": team.id,
-            "name": team.name,
-            "score": team.score,
-        }
-
-
-def rename_team(
-    team_id,
-    new_name,
-):
-
-    with SessionLocal() as session:
-
-        team = (
-            session.query(Team)
-            .filter(
-                Team.id == team_id
-            )
-            .first()
-        )
-
-        if not team:
-            return None
-
-        team.name = new_name
-
-        session.commit()
-
-        return {
-            "id": team.id,
-            "name": team.name,
-            "score": team.score,
-        }
+    )
 
 
 # ============================================================
-# НАЧИСЛЕНИЕ БАЛЛОВ
+# КЛАВИАТУРА КАПИТАНА
 # ============================================================
 
-def add_points(
-    team_id,
-    points,
-    user_id,
-    username=None,
-    first_name=None,
-    activity=None,
-    result=None,
+def captain_keyboard():
+
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="🏆 Табло",
+                    callback_data="scoreboard",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="🕵️ Моё задание",
+                    callback_data="my_mission",
+                )
+            ],
+        ]
+    )
+
+
+# ============================================================
+# START
+# ============================================================
+
+@dp.message(Command("start"))
+async def start_handler(message: Message):
+
+    save_user(
+        user_id=message.from_user.id,
+        username=message.from_user.username,
+        first_name=message.from_user.first_name,
+    )
+
+    if is_admin(message.from_user.id):
+
+        await message.answer(
+            "👑 <b>Панель администратора CAMP WARS</b>\n\n"
+            "Ты вошёл как администратор.",
+            reply_markup=admin_keyboard(),
+            parse_mode="HTML",
+        )
+
+        return
+
+    user = get_user(
+        message.from_user.id
+    )
+
+    if not user:
+
+        await message.answer(
+            "Ошибка регистрации. Попробуйте ещё раз."
+        )
+
+        return
+
+    if not user["team_id"]:
+
+        await message.answer(
+            "🧢 <b>CAMP WARS</b>\n\n"
+            "Выбери свою команду:",
+            reply_markup=team_selection_keyboard(),
+            parse_mode="HTML",
+        )
+
+        return
+
+    team = get_team(
+        user["team_id"]
+    )
+
+    await message.answer(
+        f"🧢 <b>Ты капитан команды «{team['name']}»</b>\n\n"
+        "Здесь будут появляться ваши секретные задания.",
+        reply_markup=captain_keyboard(),
+        parse_mode="HTML",
+    )
+
+
+# ============================================================
+# ВЫБОР КОМАНДЫ
+# ============================================================
+
+def team_selection_keyboard():
+
+    teams = get_teams()
+
+    rows = []
+
+    for team in teams:
+
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=team["name"],
+                    callback_data=f"select_team:{team['id']}",
+                )
+            ]
+        )
+
+    return InlineKeyboardMarkup(
+        inline_keyboard=rows
+    )
+
+
+@dp.callback_query(
+    F.data.startswith("select_team:")
+)
+async def select_team(
+    callback: CallbackQuery
 ):
 
-    with SessionLocal() as session:
+    team_id = int(
+        callback.data.split(":")[1]
+    )
 
-        team = (
-            session.query(Team)
-            .filter(
-                Team.id == team_id
+    team = get_team(team_id)
+
+    if not team:
+
+        await callback.answer(
+            "Команда не найдена",
+            show_alert=True,
+        )
+
+        return
+
+    set_user_team(
+        callback.from_user.id,
+        team_id,
+    )
+
+    await callback.message.edit_text(
+        f"🧢 <b>Команда выбрана:</b>\n"
+        f"«{team['name']}»\n\n"
+        "Теперь бот сможет присылать тебе секретные задания.",
+        reply_markup=captain_keyboard(),
+        parse_mode="HTML",
+    )
+
+    await callback.answer()
+
+
+# ============================================================
+# ТАБЛО
+# ============================================================
+
+def scoreboard_text():
+
+    teams = get_teams()
+
+    teams = sorted(
+        teams,
+        key=lambda x: x["score"],
+        reverse=True,
+    )
+
+    text = "🏆 <b>CAMP WARS — ТАБЛО</b>\n\n"
+
+    medals = [
+        "🥇",
+        "🥈",
+        "🥉",
+    ]
+
+    for index, team in enumerate(teams):
+
+        if index < 3:
+            prefix = medals[index]
+        else:
+            prefix = f"{index + 1}."
+
+        text += (
+            f"{prefix} "
+            f"<b>{team['name']}</b> — "
+            f"{team['score']} очков\n"
+        )
+
+    return text
+
+
+@dp.callback_query(
+    F.data == "scoreboard"
+)
+async def scoreboard(
+    callback: CallbackQuery
+):
+
+    text = scoreboard_text()
+
+    try:
+
+        await callback.message.edit_text(
+            text,
+            reply_markup=(
+                admin_keyboard()
+                if is_admin(
+                    callback.from_user.id
+                )
+                else captain_keyboard()
+            ),
+            parse_mode="HTML",
+        )
+
+    except TelegramBadRequest as e:
+
+        if "message is not modified" not in str(e):
+
+            raise
+
+    await callback.answer()
+
+
+# ============================================================
+# ДОБАВЛЕНИЕ БАЛЛОВ
+# ============================================================
+
+@dp.callback_query(
+    F.data == "add_points"
+)
+async def add_points_start(
+    callback: CallbackQuery
+):
+
+    if not is_admin(
+        callback.from_user.id
+    ):
+
+        await callback.answer(
+            "⛔ Нет доступа",
+            show_alert=True,
+        )
+
+        return
+
+    await callback.message.edit_text(
+        "➕ <b>Добавить баллы</b>\n\n"
+        "Выбери команду:",
+        reply_markup=points_team_keyboard(),
+        parse_mode="HTML",
+    )
+
+    await callback.answer()
+
+
+def points_team_keyboard():
+
+    teams = get_teams()
+
+    rows = []
+
+    for team in teams:
+
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=team["name"],
+                    callback_data=f"points_team:{team['id']}",
+                )
+            ]
+        )
+
+    rows.append(
+        [
+            InlineKeyboardButton(
+                text="⬅️ Назад",
+                callback_data="admin_home",
             )
-            .first()
+        ]
+    )
+
+    return InlineKeyboardMarkup(
+        inline_keyboard=rows
+    )
+
+
+@dp.callback_query(
+    F.data.startswith("points_team:")
+)
+async def points_team(
+    callback: CallbackQuery
+):
+
+    if not is_admin(
+        callback.from_user.id
+    ):
+
+        await callback.answer(
+            "⛔ Нет доступа",
+            show_alert=True,
         )
 
-        if not team:
-            return None
+        return
 
-        team.score += points
+    team_id = int(
+        callback.data.split(":")[1]
+    )
 
-        history = PointsHistory(
-            team_id=team.id,
-            team_name=team.name,
-            points=points,
-            new_score=team.score,
-            user_id=user_id,
-            username=username,
-            first_name=first_name,
-            activity=activity,
-            result=result,
+    team = get_team(team_id)
+
+    await callback.message.edit_text(
+        f"➕ <b>{team['name']}</b>\n\n"
+        "Теперь отправь мне количество баллов числом.\n\n"
+        "Например:\n"
+        "<code>150</code>\n"
+        "<code>-50</code>",
+        parse_mode="HTML",
+    )
+
+    # Сохраняем временный выбор команды
+    await dp.storage.set_data(
+        bot=bot,
+        chat=callback.from_user.id,
+        data={
+            "points_team_id": team_id
+        }
+    )
+
+    await callback.answer()
+
+
+# ============================================================
+# ТЕКСТ — ВВОД БАЛЛОВ
+# ============================================================
+
+@dp.message(
+    F.text.regexp(r"^-?\d+$")
+)
+async def points_input(
+    message: Message
+):
+
+    if not is_admin(
+        message.from_user.id
+    ):
+
+        return
+
+    try:
+
+        data = await dp.storage.get_data(
+            bot=bot,
+            chat=message.from_user.id,
         )
 
-        session.add(history)
+    except Exception:
 
-        session.commit()
+        data = {}
 
-        return team.score
+    team_id = data.get(
+        "points_team_id"
+    )
+
+    if not team_id:
+
+        return
+
+    points = int(
+        message.text
+    )
+
+    team = get_team(
+        team_id
+    )
+
+    if not team:
+
+        await message.answer(
+            "Команда не найдена."
+        )
+
+        return
+
+    new_score = add_points(
+        team_id=team_id,
+        points=points,
+        user_id=message.from_user.id,
+        username=message.from_user.username,
+        first_name=message.from_user.first_name,
+        activity="Ручное начисление",
+    )
+
+    await dp.storage.clear(
+        bot=bot,
+        chat=message.from_user.id,
+    )
+
+    sign = "+" if points >= 0 else ""
+
+    await message.answer(
+        f"✅ <b>Баллы добавлены</b>\n\n"
+        f"Команда: <b>{team['name']}</b>\n"
+        f"Изменение: <b>{sign}{points}</b>\n"
+        f"Новый счёт: <b>{new_score}</b>",
+        reply_markup=admin_keyboard(),
+        parse_mode="HTML",
+    )
 
 
 # ============================================================
 # ИСТОРИЯ
 # ============================================================
 
-def get_history(
-    limit=30,
+@dp.callback_query(
+    F.data == "history"
+)
+async def history_handler(
+    callback: CallbackQuery
 ):
 
-    with SessionLocal() as session:
+    if not is_admin(
+        callback.from_user.id
+    ):
 
-        rows = (
-            session.query(
-                PointsHistory
-            )
-            .order_by(
-                PointsHistory.id.desc()
-            )
-            .limit(limit)
-            .all()
+        await callback.answer(
+            "⛔ Нет доступа",
+            show_alert=True,
         )
 
-        return [
-            {
-                "id": row.id,
-                "team_id": row.team_id,
-                "team_name": row.team_name,
-                "points": row.points,
-                "new_score": row.new_score,
-                "user_id": row.user_id,
-                "username": row.username,
-                "first_name": row.first_name,
-                "activity": row.activity,
-                "result": row.result,
-                "created_at": row.created_at.strftime(
-                    "%d.%m %H:%M"
-                ),
-            }
-            for row in rows
-        ]
+        return
+
+    history = get_history(
+        limit=30
+    )
+
+    if not history:
+
+        text = "📜 <b>История пока пустая.</b>"
+
+    else:
+
+        text = "📜 <b>Последние изменения</b>\n\n"
+
+        for row in history:
+
+            sign = (
+                "+"
+                if row["points"] >= 0
+                else ""
+            )
+
+            username = (
+                f"@{row['username']}"
+                if row["username"]
+                else row["first_name"]
+            )
+
+            activity = (
+                f" — {row['activity']}"
+                if row["activity"]
+                else ""
+            )
+
+            text += (
+                f"🕐 {row['created_at']}\n"
+                f"🏆 {row['team_name']}: "
+                f"<b>{sign}{row['points']}</b>\n"
+                f"👤 {username}"
+                f"{activity}\n\n"
+            )
+
+    await callback.message.edit_text(
+        text,
+        reply_markup=admin_keyboard(),
+        parse_mode="HTML",
+    )
+
+    await callback.answer()
 
 
 # ============================================================
-# ПОЛЬЗОВАТЕЛИ
+# КОМАНДЫ
 # ============================================================
 
-def save_user(
-    user_id,
-    username=None,
-    first_name=None,
+@dp.callback_query(
+    F.data == "teams"
+)
+async def teams_handler(
+    callback: CallbackQuery
 ):
 
-    with SessionLocal() as session:
+    if not is_admin(
+        callback.from_user.id
+    ):
 
-        user = (
-            session.query(User)
-            .filter(
-                User.id == user_id
-            )
-            .first()
+        await callback.answer(
+            "⛔ Нет доступа",
+            show_alert=True,
         )
 
-        if not user:
+        return
 
-            user = User(
-                id=user_id,
-                username=username,
-                first_name=first_name,
-            )
+    teams = get_teams()
 
-            session.add(user)
+    text = "✏️ <b>Команды</b>\n\n"
 
-        else:
+    for team in teams:
 
-            user.username = username
-            user.first_name = first_name
-
-        session.commit()
-
-
-def get_user(
-    user_id,
-):
-
-    with SessionLocal() as session:
-
-        user = (
-            session.query(User)
-            .filter(
-                User.id == user_id
-            )
-            .first()
+        text += (
+            f"{team['id']}. "
+            f"{team['name']} — "
+            f"{team['score']} очков\n"
         )
 
-        if not user:
-            return None
+    await callback.message.edit_text(
+        text,
+        reply_markup=rename_teams_keyboard(),
+        parse_mode="HTML",
+    )
 
-        return {
-            "id": user.id,
-            "username": user.username,
-            "first_name": user.first_name,
-            "team_id": user.team_id,
-        }
+    await callback.answer()
 
 
-def set_user_team(
-    user_id,
-    team_id,
-):
+def rename_teams_keyboard():
 
-    with SessionLocal() as session:
+    teams = get_teams()
 
-        user = (
-            session.query(User)
-            .filter(
-                User.id == user_id
-            )
-            .first()
-        )
+    rows = []
 
-        if not user:
+    for team in teams:
 
-            user = User(
-                id=user_id,
-                team_id=team_id,
-            )
-
-            session.add(user)
-
-        else:
-
-            user.team_id = team_id
-
-        session.commit()
-
-
-# ============================================================
-# МИССИИ
-# ============================================================
-
-def create_mission(
-    title,
-    description,
-    points,
-):
-
-    with SessionLocal() as session:
-
-        mission = Mission(
-            title=title,
-            description=description,
-            points=points,
-        )
-
-        session.add(mission)
-
-        session.commit()
-
-        return mission.id
-
-
-def get_missions():
-
-    with SessionLocal() as session:
-
-        missions = (
-            session.query(Mission)
-            .order_by(Mission.id)
-            .all()
-        )
-
-        return [
-            {
-                "id": mission.id,
-                "title": mission.title,
-                "description": mission.description,
-                "points": mission.points,
-            }
-            for mission in missions
-        ]
-
-
-def get_mission(
-    mission_id,
-):
-
-    with SessionLocal() as session:
-
-        mission = (
-            session.query(Mission)
-            .filter(
-                Mission.id == mission_id
-            )
-            .first()
-        )
-
-        if not mission:
-            return None
-
-        return {
-            "id": mission.id,
-            "title": mission.title,
-            "description": mission.description,
-            "points": mission.points,
-        }
-
-
-# ============================================================
-# ПРОВЕРКА:
-# ВЫДАВАЛОСЬ ЛИ ЗАДАНИЕ КОМАНДЕ
-# ============================================================
-
-def mission_was_issued(
-    mission_id,
-    team_id,
-):
-
-    with SessionLocal() as session:
-
-        exists = (
-            session.query(
-                IssuedMission
-            )
-            .filter(
-                IssuedMission.mission_id
-                == mission_id,
-                IssuedMission.team_id
-                == team_id,
-            )
-            .first()
-        )
-
-        return exists is not None
-
-
-# ============================================================
-# ВЫДАТЬ МИССИЮ
-# ============================================================
-
-def issue_mission(
-    mission_id,
-    team_id,
-    user_id=None,
-):
-
-    with SessionLocal() as session:
-
-        # Дополнительная защита от повторной выдачи.
-
-        existing = (
-            session.query(
-                IssuedMission
-            )
-            .filter(
-                IssuedMission.mission_id
-                == mission_id,
-                IssuedMission.team_id
-                == team_id,
-            )
-            .first()
-        )
-
-        if existing:
-            return None
-
-        issued = IssuedMission(
-            mission_id=mission_id,
-            team_id=team_id,
-            issued_to_user_id=user_id,
-            status="active",
-        )
-
-        session.add(issued)
-
-        session.commit()
-
-        return issued.id
-
-
-# ============================================================
-# ДОСТУПНЫЕ МИССИИ ДЛЯ КОМАНДЫ
-# ============================================================
-
-def get_available_missions(
-    team_id,
-):
-
-    with SessionLocal() as session:
-
-        issued_ids = (
-            session.query(
-                IssuedMission.mission_id
-            )
-            .filter(
-                IssuedMission.team_id
-                == team_id
-            )
-            .all()
-        )
-
-        issued_ids = {
-            item[0]
-            for item in issued_ids
-        }
-
-        query = (
-            session.query(Mission)
-            .order_by(Mission.id)
-        )
-
-        if issued_ids:
-
-            query = query.filter(
-                ~Mission.id.in_(
-                    issued_ids
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=f"✏️ {team['name']}",
+                    callback_data=f"rename:{team['id']}",
                 )
+            ]
+        )
+
+    rows.append(
+        [
+            InlineKeyboardButton(
+                text="⬅️ Назад",
+                callback_data="admin_home",
             )
-
-        missions = query.all()
-
-        return [
-            {
-                "id": mission.id,
-                "title": mission.title,
-                "description": mission.description,
-                "points": mission.points,
-            }
-            for mission in missions
         ]
+    )
+
+    return InlineKeyboardMarkup(
+        inline_keyboard=rows
+    )
 
 
-# ============================================================
-# АКТИВНЫЕ МИССИИ КОМАНДЫ
-# ============================================================
-
-def get_active_mission_for_team(
-    team_id,
+@dp.callback_query(
+    F.data.startswith("rename:")
+)
+async def rename_start(
+    callback: CallbackQuery
 ):
 
-    with SessionLocal() as session:
+    if not is_admin(
+        callback.from_user.id
+    ):
 
-        issued = (
-            session.query(
-                IssuedMission
-            )
-            .filter(
-                IssuedMission.team_id
-                == team_id,
-                IssuedMission.status
-                == "active",
-            )
-            .order_by(
-                IssuedMission.id.desc()
-            )
-            .first()
+        await callback.answer(
+            "⛔ Нет доступа",
+            show_alert=True,
         )
 
-        if not issued:
-            return None
+        return
 
-        mission = (
-            session.query(Mission)
-            .filter(
-                Mission.id
-                == issued.mission_id
-            )
-            .first()
-        )
+    team_id = int(
+        callback.data.split(":")[1]
+    )
 
-        if not mission:
-            return None
+    team = get_team(team_id)
 
-        return {
-            "issued_id": issued.id,
-            "mission_id": mission.id,
-            "team_id": issued.team_id,
-            "title": mission.title,
-            "description": mission.description,
-            "points": mission.points,
-            "issued_at": issued.issued_at.strftime(
-                "%d.%m %H:%M"
-            ),
-            "status": issued.status,
+    await dp.storage.set_data(
+        bot=bot,
+        chat=callback.from_user.id,
+        data={
+            "rename_team_id": team_id
         }
+    )
+
+    await callback.message.edit_text(
+        f"✏️ Команда: <b>{team['name']}</b>\n\n"
+        "Отправь новое название:",
+        parse_mode="HTML",
+    )
+
+    await callback.answer()
 
 
 # ============================================================
-# ВСЕ ВЫДАННЫЕ МИССИИ
+# ОБРАБОТКА НОВОГО НАЗВАНИЯ
 # ============================================================
 
-def get_issued_missions(
-    limit=50,
+@dp.message()
+async def text_handler(
+    message: Message
 ):
 
-    with SessionLocal() as session:
+    if not is_admin(
+        message.from_user.id
+    ):
 
-        rows = (
-            session.query(
-                IssuedMission
-            )
-            .order_by(
-                IssuedMission.id.desc()
-            )
-            .limit(limit)
-            .all()
+        return
+
+    data = await dp.storage.get_data(
+        bot=bot,
+        chat=message.from_user.id,
+    )
+
+    team_id = data.get(
+        "rename_team_id"
+    )
+
+    if not team_id:
+
+        return
+
+    new_name = (
+        message.text
+        .strip()
+    )
+
+    if not new_name:
+
+        await message.answer(
+            "Название не может быть пустым."
         )
 
-        result = []
+        return
 
-        for row in rows:
+    rename_team(
+        team_id,
+        new_name,
+    )
 
-            mission = (
-                session.query(Mission)
+    await dp.storage.clear(
+        bot=bot,
+        chat=message.from_user.id,
+    )
+
+    await message.answer(
+        f"✅ Команда переименована:\n\n"
+        f"<b>{new_name}</b>",
+        reply_markup=admin_keyboard(),
+        parse_mode="HTML",
+    )
+
+
+# ============================================================
+# ВЫДАТЬ ЗАДАНИЕ
+# ============================================================
+
+@dp.callback_query(
+    F.data == "issue_mission"
+)
+async def issue_mission_handler(
+    callback: CallbackQuery
+):
+
+    if not is_admin(
+        callback.from_user.id
+    ):
+
+        await callback.answer(
+            "⛔ Нет доступа",
+            show_alert=True,
+        )
+
+        return
+
+    teams = get_teams()
+
+    available_for_all = True
+
+    for team in teams:
+
+        available = get_available_missions(
+            team["id"]
+        )
+
+        if not available:
+
+            available_for_all = False
+            break
+
+    if not available_for_all:
+
+        await callback.message.answer(
+            "⚠️ Для одной или нескольких команд "
+            "закончились уникальные задания."
+        )
+
+        await callback.answer()
+
+        return
+
+    sent = 0
+
+    failed = 0
+
+    for team in teams:
+
+        available = get_available_missions(
+            team["id"]
+        )
+
+        if not available:
+
+            continue
+
+        mission = random.choice(
+            available
+        )
+
+        # Ищем капитана этой команды
+        # среди зарегистрированных пользователей.
+
+        from database import SessionLocal, User
+
+        with SessionLocal() as session:
+
+            captain = (
+                session.query(User)
                 .filter(
-                    Mission.id
-                    == row.mission_id
+                    User.team_id
+                    == team["id"]
                 )
                 .first()
             )
 
-            team = (
-                session.query(Team)
-                .filter(
-                    Team.id
-                    == row.team_id
+        if not captain:
+
+            failed += 1
+            continue
+
+        issue_mission(
+            mission_id=mission["id"],
+            team_id=team["id"],
+            user_id=captain.id,
+        )
+
+        text = (
+            "🕵️ <b>СЕКРЕТНОЕ ЗАДАНИЕ</b>\n\n"
+            f"<b>{mission['title']}</b>\n\n"
+            f"{mission['description']}\n\n"
+            f"🏆 Награда: <b>+{mission['points']} очков</b>\n\n"
+            "📸 <b>Важно:</b> доказательство выполнения "
+            "необходимо прислать в <b>чат капитанов</b>.\n\n"
+            "🤫 Не рассказывайте другим командам "
+            "о своём задании."
+        )
+
+        try:
+
+            await bot.send_message(
+                captain.id,
+                text,
+                parse_mode="HTML",
+            )
+
+            sent += 1
+
+        except Exception as e:
+
+            logger.exception(
+                "Не удалось отправить миссию "
+                "капитану %s: %s",
+                captain.id,
+                e,
+            )
+
+            failed += 1
+
+    await callback.message.answer(
+        f"🕵️ <b>Задания выданы</b>\n\n"
+        f"📨 Отправлено: <b>{sent}</b>\n"
+        f"⚠️ Не отправлено: <b>{failed}</b>",
+        parse_mode="HTML",
+    )
+
+    await callback.answer()
+
+
+# ============================================================
+# МОЁ ЗАДАНИЕ
+# ============================================================
+
+@dp.callback_query(
+    F.data == "my_mission"
+)
+async def my_mission_handler(
+    callback: CallbackQuery
+):
+
+    if is_admin(
+        callback.from_user.id
+    ):
+
+        await callback.answer(
+            "Эта кнопка доступна капитанам.",
+            show_alert=True,
+        )
+
+        return
+
+    user = get_user(
+        callback.from_user.id
+    )
+
+    if not user or not user["team_id"]:
+
+        await callback.answer(
+            "Сначала выбери команду.",
+            show_alert=True,
+        )
+
+        return
+
+    mission = get_active_mission_for_team(
+        user["team_id"]
+    )
+
+    if not mission:
+
+        await callback.message.answer(
+            "🕵️ Сейчас у вашей команды "
+            "нет активного задания."
+        )
+
+        await callback.answer()
+
+        return
+
+    text = (
+        "🕵️ <b>ВАШЕ СЕКРЕТНОЕ ЗАДАНИЕ</b>\n\n"
+        f"<b>{mission['title']}</b>\n\n"
+        f"{mission['description']}\n\n"
+        f"🏆 Награда: <b>+{mission['points']} очков</b>\n\n"
+        "📸 <b>Доказательство выполнения "
+        "пришлите в чат капитанов.</b>"
+    )
+
+    await callback.message.answer(
+        text,
+        parse_mode="HTML",
+    )
+
+    await callback.answer()
+
+
+# ============================================================
+# АДМИН — ГЛАВНОЕ МЕНЮ
+# ============================================================
+
+@dp.callback_query(
+    F.data == "admin_home"
+)
+async def admin_home(
+    callback: CallbackQuery
+):
+
+    if not is_admin(
+        callback.from_user.id
+    ):
+
+        await callback.answer(
+            "⛔ Нет доступа",
+            show_alert=True,
+        )
+
+        return
+
+    await callback.message.edit_text(
+        "👑 <b>Панель администратора CAMP WARS</b>",
+        reply_markup=admin_keyboard(),
+        parse_mode="HTML",
+    )
+
+    await callback.answer()
+
+
+# ============================================================
+# АКТИВНОСТЬ
+# ============================================================
+
+@dp.callback_query(
+    F.data == "activity"
+)
+async def activity_handler(
+    callback: CallbackQuery
+):
+
+    if not is_admin(
+        callback.from_user.id
+    ):
+
+        await callback.answer(
+            "⛔ Нет доступа",
+            show_alert=True,
+        )
+
+        return
+
+    await callback.message.edit_text(
+        "🏅 <b>За активность</b>\n\n"
+        "Выбери команду:",
+        reply_markup=activity_team_keyboard(),
+        parse_mode="HTML",
+    )
+
+    await callback.answer()
+
+
+def activity_team_keyboard():
+
+    teams = get_teams()
+
+    rows = []
+
+    for team in teams:
+
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=team["name"],
+                    callback_data=f"activity_team:{team['id']}",
                 )
-                .first()
-            )
+            ]
+        )
 
-            result.append(
-                {
-                    "id": row.id,
-                    "mission_id": row.mission_id,
-                    "mission_title": (
-                        mission.title
-                        if mission
-                        else "Удалённая миссия"
-                    ),
-                    "team_id": row.team_id,
-                    "team_name": (
-                        team.name
-                        if team
-                        else "Неизвестная команда"
-                    ),
-                    "user_id": row.issued_to_user_id,
-                    "status": row.status,
-                    "issued_at": row.issued_at.strftime(
-                        "%d.%m %H:%M"
-                    ),
-                }
+    rows.append(
+        [
+            InlineKeyboardButton(
+                text="⬅️ Назад",
+                callback_data="admin_home",
             )
+        ]
+    )
 
-        return result
+    return InlineKeyboardMarkup(
+        inline_keyboard=rows
+    )
+
+
+@dp.callback_query(
+    F.data.startswith("activity_team:")
+)
+async def activity_team(
+    callback: CallbackQuery
+):
+
+    if not is_admin(
+        callback.from_user.id
+    ):
+
+        await callback.answer(
+            "⛔ Нет доступа",
+            show_alert=True,
+        )
+
+        return
+
+    team_id = int(
+        callback.data.split(":")[1]
+    )
+
+    team = get_team(team_id)
+
+    await dp.storage.set_data(
+        bot=bot,
+        chat=callback.from_user.id,
+        data={
+            "points_team_id": team_id,
+            "activity_mode": True,
+        }
+    )
+
+    await callback.message.edit_text(
+        f"🏅 <b>{team['name']}</b>\n\n"
+        "Отправь количество баллов:",
+        parse_mode="HTML",
+    )
+
+    await callback.answer()
+
+
+# ============================================================
+# ЗАПУСК
+# ============================================================
+
+async def main():
+
+    init_database()
+
+    logger.info(
+        "Bot started"
+    )
+
+    await dp.start_polling(
+        bot
+    )
+
+
+if __name__ == "__main__":
+
+    asyncio.run(
+        main()
+    )
