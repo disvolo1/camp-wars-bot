@@ -1,6 +1,6 @@
 import os
-import logging
 import asyncio
+import logging
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
@@ -14,9 +14,9 @@ from database import (
 )
 
 
-# =========================
+# ============================================================
 # НАСТРОЙКИ
-# =========================
+# ============================================================
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
@@ -31,9 +31,9 @@ if not BOT_TOKEN:
     raise RuntimeError("Не задан BOT_TOKEN")
 
 
-# =========================
+# ============================================================
 # КОМАНДЫ
-# =========================
+# ============================================================
 
 TEAMS = [
     "🐻 Медведи",
@@ -49,9 +49,12 @@ TEAMS = [
 ]
 
 
-# =========================
+# ============================================================
 # АКТИВНОСТИ
-# =========================
+# ============================================================
+
+# Обычные мероприятия.
+# Победитель получает 100 очков.
 
 NORMAL_ACTIVITIES = [
     "🏓 Пинг-понг",
@@ -63,25 +66,36 @@ NORMAL_ACTIVITIES = [
 ]
 
 
+# Большие мероприятия.
+# Очки получают только 1, 2 и 3 места.
+
 TOURNAMENT_ACTIVITIES = [
     "🏆 Большой турнир по пинг-понгу",
     "🏆 Большой турнир по волейболу",
-    "🎭 Сценки",
+    "🎭 Отрядные сценки",
     "🔥 Гранд-финал",
 ]
 
 
-# =========================
-# ОЧКИ
-# =========================
+# ============================================================
+# СИСТЕМА ОЧКОВ
+# ============================================================
+
+# Обычная победа
 
 NORMAL_WIN_POINTS = 100
+
+
+# Большой турнир
 
 TOURNAMENT_POINTS = {
     1: 1000,
     2: 600,
     3: 350,
 }
+
+
+# Гранд-финал
 
 FINAL_POINTS = {
     1: 2000,
@@ -90,38 +104,47 @@ FINAL_POINTS = {
 }
 
 
-# =========================
+# ============================================================
 # BOT
-# =========================
+# ============================================================
 
 logging.basicConfig(
     level=logging.INFO
 )
 
-bot = Bot(BOT_TOKEN)
+bot = Bot(
+    token=BOT_TOKEN
+)
 
 dp = Dispatcher()
 
 
-# =========================
-# СОСТОЯНИЕ
-# =========================
+# ============================================================
+# ВРЕМЕННОЕ СОСТОЯНИЕ
+# ============================================================
+
+# Здесь бот запоминает:
+#
+# какой администратор
+# какую команду
+# какую активность
+#
+# выбрал в данный момент.
 
 user_state = {}
 
 
-# =========================
-# ДОСТУП
-# =========================
+# ============================================================
+# ПРОВЕРКА ДОСТУПА
+# ============================================================
 
 def is_admin(user_id: int) -> bool:
-
     return user_id in ADMIN_IDS
 
 
-# =========================
-# КЛАВИАТУРЫ
-# =========================
+# ============================================================
+# ГЛАВНОЕ МЕНЮ
+# ============================================================
 
 def main_keyboard():
 
@@ -142,6 +165,10 @@ def main_keyboard():
     return builder.as_markup()
 
 
+# ============================================================
+# ВЫБОР КОМАНДЫ
+# ============================================================
+
 def teams_keyboard():
 
     builder = InlineKeyboardBuilder()
@@ -158,9 +185,15 @@ def teams_keyboard():
     return builder.as_markup()
 
 
+# ============================================================
+# ВЫБОР АКТИВНОСТИ
+# ============================================================
+
 def activities_keyboard():
 
     builder = InlineKeyboardBuilder()
+
+    # Обычные активности
 
     for index, activity in enumerate(
         NORMAL_ACTIVITIES
@@ -170,6 +203,8 @@ def activities_keyboard():
             text=activity,
             callback_data=f"normal:{index}",
         )
+
+    # Большие турниры
 
     for index, activity in enumerate(
         TOURNAMENT_ACTIVITIES
@@ -184,6 +219,10 @@ def activities_keyboard():
 
     return builder.as_markup()
 
+
+# ============================================================
+# РЕЗУЛЬТАТ ОБЫЧНОГО МАТЧА
+# ============================================================
 
 def normal_result_keyboard():
 
@@ -203,6 +242,10 @@ def normal_result_keyboard():
 
     return builder.as_markup()
 
+
+# ============================================================
+# РЕЗУЛЬТАТ БОЛЬШОГО ТУРНИРА
+# ============================================================
 
 def tournament_result_keyboard():
 
@@ -233,9 +276,9 @@ def tournament_result_keyboard():
     return builder.as_markup()
 
 
-# =========================
-# ТАБЛО
-# =========================
+# ============================================================
+# ФОРМИРОВАНИЕ ТАБЛО
+# ============================================================
 
 def build_scoreboard(teams):
 
@@ -257,28 +300,30 @@ def build_scoreboard(teams):
         start=1,
     ):
 
-        prefix = medals.get(
-            position,
-            f"{position}.",
-        )
+        if position <= 3:
+            prefix = medals[position]
+        else:
+            prefix = f"{position}."
 
         lines.append(
-            f"{prefix} {team.name} — {team.score}"
+            f"{prefix} {team['name']} — {team['score']}"
         )
 
     return "\n".join(lines)
 
 
-# =========================
-# START
-# =========================
+# ============================================================
+# /START
+# ============================================================
 
 @dp.message(Command("start"))
-async def start(message: Message):
+async def start(
+    message: Message,
+):
 
-    if not is_admin(
-        message.from_user.id
-    ):
+    user_id = message.from_user.id
+
+    if not is_admin(user_id):
 
         await message.answer(
             "⛔ Доступ закрыт."
@@ -288,14 +333,14 @@ async def start(message: Message):
 
     await message.answer(
         "🔥 CAMP WARS\n\n"
-        "Панель управления:",
+        "Панель управления результатами:",
         reply_markup=main_keyboard(),
     )
 
 
-# =========================
-# ДОБАВИТЬ РЕЗУЛЬТАТ
-# =========================
+# ============================================================
+# НАЖАЛИ «ЗАПИСАТЬ РЕЗУЛЬТАТ»
+# ============================================================
 
 @dp.callback_query(
     F.data == "add_result"
@@ -323,9 +368,9 @@ async def add_result_start(
     await callback.answer()
 
 
-# =========================
-# КОМАНДА
-# =========================
+# ============================================================
+# ВЫБОР КОМАНДЫ
+# ============================================================
 
 @dp.callback_query(
     F.data.startswith("team:")
@@ -367,9 +412,9 @@ async def select_team(
     await callback.answer()
 
 
-# =========================
-# АКТИВНОСТЬ
-# =========================
+# ============================================================
+# ВЫБОР АКТИВНОСТИ
+# ============================================================
 
 @dp.callback_query(
     F.data.startswith("normal:")
@@ -390,9 +435,7 @@ async def select_activity(
 
         return
 
-    kind, index = (
-        callback.data.split(":")
-    )
+    kind, index = callback.data.split(":")
 
     index = int(index)
 
@@ -403,40 +446,44 @@ async def select_activity(
     if not state:
 
         await callback.answer(
-            "Начните заново",
+            "Сессия устарела. Начните заново.",
             show_alert=True,
         )
 
         return
 
+    # --------------------------------------------------------
+    # ОБЫЧНАЯ АКТИВНОСТЬ
+    # --------------------------------------------------------
+
     if kind == "normal":
 
-        activity = (
-            NORMAL_ACTIVITIES[index]
-        )
+        activity = NORMAL_ACTIVITIES[index]
 
         state["activity"] = activity
         state["kind"] = "normal"
 
         await callback.message.edit_text(
-            f"{state['team']}\n"
-            f"{activity}\n\n"
+            f"👥 {state['team']}\n\n"
+            f"🎯 {activity}\n\n"
             f"Результат:",
             reply_markup=normal_result_keyboard(),
         )
 
+    # --------------------------------------------------------
+    # БОЛЬШОЙ ТУРНИР
+    # --------------------------------------------------------
+
     else:
 
-        activity = (
-            TOURNAMENT_ACTIVITIES[index]
-        )
+        activity = TOURNAMENT_ACTIVITIES[index]
 
         state["activity"] = activity
         state["kind"] = "tournament"
 
         await callback.message.edit_text(
-            f"{state['team']}\n"
-            f"{activity}\n\n"
+            f"👥 {state['team']}\n\n"
+            f"🎯 {activity}\n\n"
             f"Выберите место:",
             reply_markup=tournament_result_keyboard(),
         )
@@ -444,9 +491,9 @@ async def select_activity(
     await callback.answer()
 
 
-# =========================
+# ============================================================
 # ОБЫЧНАЯ ПОБЕДА
-# =========================
+# ============================================================
 
 @dp.callback_query(
     F.data == "normal_win"
@@ -473,7 +520,7 @@ async def normal_win(
     if not state:
 
         await callback.answer(
-            "Начните заново",
+            "Сессия устарела. Начните заново.",
             show_alert=True,
         )
 
@@ -482,17 +529,17 @@ async def normal_win(
     team = state["team"]
     activity = state["activity"]
 
-    new_score = await add_points(
+    new_score = add_points(
         team,
         NORMAL_WIN_POINTS,
     )
 
     await callback.message.edit_text(
-        f"✅ Результат записан!\n\n"
-        f"{team}\n"
-        f"{activity}\n"
+        "✅ Результат записан!\n\n"
+        f"👥 {team}\n"
+        f"🎯 {activity}\n"
         f"🏆 Победа\n\n"
-        f"+{NORMAL_WIN_POINTS} очков\n\n"
+        f"➕ {NORMAL_WIN_POINTS} очков\n\n"
         f"💰 Всего команды: {new_score}",
         reply_markup=main_keyboard(),
     )
@@ -507,9 +554,9 @@ async def normal_win(
     )
 
 
-# =========================
-# ТУРНИР
-# =========================
+# ============================================================
+# МЕСТО В ТУРНИРЕ
+# ============================================================
 
 @dp.callback_query(
     F.data.startswith("place:")
@@ -536,7 +583,7 @@ async def tournament_place(
     if not state:
 
         await callback.answer(
-            "Начните заново",
+            "Сессия устарела. Начните заново.",
             show_alert=True,
         )
 
@@ -549,6 +596,8 @@ async def tournament_place(
     team = state["team"]
     activity = state["activity"]
 
+    # Для гранд-финала отдельная шкала
+
     if activity == "🔥 Гранд-финал":
 
         points = FINAL_POINTS[place]
@@ -557,7 +606,7 @@ async def tournament_place(
 
         points = TOURNAMENT_POINTS[place]
 
-    new_score = await add_points(
+    new_score = add_points(
         team,
         points,
     )
@@ -569,11 +618,11 @@ async def tournament_place(
     }
 
     await callback.message.edit_text(
-        f"✅ Результат записан!\n\n"
-        f"{team}\n"
-        f"{activity}\n"
+        "✅ Результат записан!\n\n"
+        f"👥 {team}\n"
+        f"🎯 {activity}\n"
         f"{medals[place]} {place} место\n\n"
-        f"+{points} очков\n\n"
+        f"➕ {points} очков\n\n"
         f"💰 Всего команды: {new_score}",
         reply_markup=main_keyboard(),
     )
@@ -588,9 +637,9 @@ async def tournament_place(
     )
 
 
-# =========================
+# ============================================================
 # ТАБЛО
-# =========================
+# ============================================================
 
 @dp.callback_query(
     F.data == "scoreboard"
@@ -610,7 +659,7 @@ async def scoreboard(
 
         return
 
-    teams = await get_scores()
+    teams = get_scores()
 
     await callback.message.edit_text(
         build_scoreboard(teams),
@@ -620,9 +669,9 @@ async def scoreboard(
     await callback.answer()
 
 
-# =========================
+# ============================================================
 # ОТМЕНА
-# =========================
+# ============================================================
 
 @dp.callback_query(
     F.data == "cancel"
@@ -638,16 +687,18 @@ async def cancel(
 
     await callback.message.edit_text(
         "🔥 CAMP WARS\n\n"
-        "Панель управления:",
+        "Панель управления результатами:",
         reply_markup=main_keyboard(),
     )
 
-    await callback.answer()
+    await callback.answer(
+        "Отменено"
+    )
 
 
-# =========================
+# ============================================================
 # ЗАПУСК
-# =========================
+# ============================================================
 
 async def main():
 
@@ -655,11 +706,23 @@ async def main():
         "🔥 CAMP WARS BOT STARTED"
     )
 
-    await init_database()
+    # Создаём SQLite-базу и 10 команд
 
-    await dp.start_polling(bot)
+    init_database()
 
+    # Запускаем Telegram polling
+
+    await dp.start_polling(
+        bot
+    )
+
+
+# ============================================================
+# ENTRY POINT
+# ============================================================
 
 if __name__ == "__main__":
 
-    asyncio.run(main())
+    asyncio.run(
+        main()
+    )
