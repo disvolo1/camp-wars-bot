@@ -1,3 +1,4 @@
+```python
 import os
 import asyncio
 import logging
@@ -9,8 +10,11 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from database import (
     init_database,
+    get_teams,
+    get_team,
     add_points,
-    get_scores,
+    rename_team,
+    get_history,
 )
 
 
@@ -22,65 +26,6 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 
 if not BOT_TOKEN:
     raise RuntimeError("Не задан BOT_TOKEN")
-
-
-# ============================================================
-# КОМАНДЫ
-# ============================================================
-
-TEAMS = [
-    "🐻 Медведи",
-    "🦊 Лисы",
-    "🐺 Волки",
-    "🦁 Львы",
-    "🐯 Тигры",
-    "🐼 Панды",
-    "🐸 Лягушки",
-    "🦅 Орлы",
-    "🦄 Единороги",
-    "🦈 Акулы",
-]
-
-
-# ============================================================
-# АКТИВНОСТИ
-# ============================================================
-
-NORMAL_ACTIVITIES = [
-    "🏓 Пинг-понг",
-    "🏐 Волейбол",
-    "⚽ Футбол",
-    "🏀 Стритбол",
-    "🏸 Бадминтон",
-    "🎲 Настольные игры",
-]
-
-
-TOURNAMENT_ACTIVITIES = [
-    "🏆 Большой турнир по пинг-понгу",
-    "🏆 Большой турнир по волейболу",
-    "🎭 Отрядные сценки",
-    "🔥 Гранд-финал",
-]
-
-
-# ============================================================
-# СИСТЕМА ОЧКОВ
-# ============================================================
-
-NORMAL_WIN_POINTS = 100
-
-TOURNAMENT_POINTS = {
-    1: 1000,
-    2: 600,
-    3: 350,
-}
-
-FINAL_POINTS = {
-    1: 2000,
-    2: 1200,
-    3: 700,
-}
 
 
 # ============================================================
@@ -102,27 +47,17 @@ dp = Dispatcher()
 # СОСТОЯНИЕ ПОЛЬЗОВАТЕЛЕЙ
 # ============================================================
 
+# Здесь временно хранится:
+#
+# action = "add_points"
+# team_id = 3
+#
+# или
+#
+# action = "rename_team"
+# team_id = 3
+
 user_state = {}
-
-
-# ============================================================
-# ДОСТУП
-# ============================================================
-
-# Сейчас доступ открыт абсолютно всем.
-#
-# Любой человек может:
-# - открыть бота;
-# - посмотреть таблицу;
-# - записать результат.
-#
-# Для тестирования это удобно.
-#
-# Перед лагерем обязательно вернём
-# ограничение на запись результатов.
-
-def is_admin(user_id: int) -> bool:
-    return True
 
 
 # ============================================================
@@ -134,8 +69,8 @@ def main_keyboard():
     builder = InlineKeyboardBuilder()
 
     builder.button(
-        text="➕ Записать результат",
-        callback_data="add_result",
+        text="➕ Добавить баллы",
+        callback_data="add_points",
     )
 
     builder.button(
@@ -143,123 +78,426 @@ def main_keyboard():
         callback_data="scoreboard",
     )
 
+    builder.button(
+        text="📜 История",
+        callback_data="history",
+    )
+
+    builder.button(
+        text="✏️ Названия команд",
+        callback_data="rename_menu",
+    )
+
     builder.adjust(1)
 
     return builder.as_markup()
 
 
 # ============================================================
-# КОМАНДЫ
+# КНОПКА НАЗАД
 # ============================================================
 
-def teams_keyboard():
+def back_keyboard():
 
     builder = InlineKeyboardBuilder()
 
-    for index, team in enumerate(TEAMS):
+    builder.button(
+        text="◀️ Назад",
+        callback_data="main_menu",
+    )
+
+    return builder.as_markup()
+
+
+# ============================================================
+# КЛАВИАТУРА КОМАНД
+# ============================================================
+
+def teams_keyboard(prefix):
+
+    builder = InlineKeyboardBuilder()
+
+    teams = get_teams()
+
+    for team in teams:
 
         builder.button(
-            text=team,
-            callback_data=f"team:{index}",
+            text=team["name"],
+            callback_data=f"{prefix}:{team['id']}",
         )
 
     builder.adjust(2)
 
+    builder.button(
+        text="◀️ Назад",
+        callback_data="main_menu",
+    )
+
     return builder.as_markup()
 
 
 # ============================================================
-# АКТИВНОСТИ
+# /START
 # ============================================================
 
-def activities_keyboard():
+@dp.message(Command("start"))
+async def start(message: Message):
 
-    builder = InlineKeyboardBuilder()
+    user_state.pop(
+        message.from_user.id,
+        None,
+    )
 
-    for index, activity in enumerate(
-        NORMAL_ACTIVITIES
-    ):
+    await message.answer(
+        "🔥 CAMP WARS\n\n"
+        "Панель управления:",
+        reply_markup=main_keyboard(),
+    )
 
-        builder.button(
-            text=activity,
-            callback_data=f"normal:{index}",
+
+# ============================================================
+# ГЛАВНОЕ МЕНЮ
+# ============================================================
+
+@dp.callback_query(
+    F.data == "main_menu"
+)
+async def main_menu(
+    callback: CallbackQuery,
+):
+
+    user_state.pop(
+        callback.from_user.id,
+        None,
+    )
+
+    await callback.message.edit_text(
+        "🔥 CAMP WARS\n\n"
+        "Панель управления:",
+        reply_markup=main_keyboard(),
+    )
+
+    await callback.answer()
+
+
+# ============================================================
+# ДОБАВИТЬ БАЛЛЫ
+# ============================================================
+
+@dp.callback_query(
+    F.data == "add_points"
+)
+async def add_points_start(
+    callback: CallbackQuery,
+):
+
+    user_state[
+        callback.from_user.id
+    ] = {
+        "action": "add_points",
+    }
+
+    await callback.message.edit_text(
+        "➕ ДОБАВИТЬ БАЛЛЫ\n\n"
+        "Выберите команду:",
+        reply_markup=teams_keyboard(
+            "points_team"
+        ),
+    )
+
+    await callback.answer()
+
+
+# ============================================================
+# ВЫБОР КОМАНДЫ ДЛЯ ДОБАВЛЕНИЯ БАЛЛОВ
+# ============================================================
+
+@dp.callback_query(
+    F.data.startswith("points_team:")
+)
+async def select_points_team(
+    callback: CallbackQuery,
+):
+
+    team_id = int(
+        callback.data.split(":")[1]
+    )
+
+    team = get_team(team_id)
+
+    if team is None:
+
+        await callback.answer(
+            "Команда не найдена",
+            show_alert=True,
         )
 
-    for index, activity in enumerate(
-        TOURNAMENT_ACTIVITIES
-    ):
+        return
 
-        builder.button(
-            text=activity,
-            callback_data=f"tournament:{index}",
+    user_state[
+        callback.from_user.id
+    ] = {
+        "action": "add_points",
+        "team_id": team_id,
+    }
+
+    await callback.message.edit_text(
+        "➕ ДОБАВИТЬ БАЛЛЫ\n\n"
+        f"👥 {team['name']}\n"
+        f"🏆 Сейчас: {team['score']}\n\n"
+        "Введите количество баллов.\n\n"
+        "Например:\n"
+        "250",
+        reply_markup=back_keyboard(),
+    )
+
+    await callback.answer()
+
+
+# ============================================================
+# ПЕРЕИМЕНОВАНИЕ КОМАНД
+# ============================================================
+
+@dp.callback_query(
+    F.data == "rename_menu"
+)
+async def rename_menu(
+    callback: CallbackQuery,
+):
+
+    await callback.message.edit_text(
+        "✏️ НАЗВАНИЯ КОМАНД\n\n"
+        "Выберите команду:",
+        reply_markup=teams_keyboard(
+            "rename_team"
+        ),
+    )
+
+    await callback.answer()
+
+
+# ============================================================
+# ВЫБОР КОМАНДЫ ДЛЯ ПЕРЕИМЕНОВАНИЯ
+# ============================================================
+
+@dp.callback_query(
+    F.data.startswith("rename_team:")
+)
+async def select_rename_team(
+    callback: CallbackQuery,
+):
+
+    team_id = int(
+        callback.data.split(":")[1]
+    )
+
+    team = get_team(team_id)
+
+    if team is None:
+
+        await callback.answer(
+            "Команда не найдена",
+            show_alert=True,
         )
 
-    builder.adjust(1)
+        return
 
-    return builder.as_markup()
+    user_state[
+        callback.from_user.id
+    ] = {
+        "action": "rename_team",
+        "team_id": team_id,
+    }
+
+    await callback.message.edit_text(
+        "✏️ ПЕРЕИМЕНОВАНИЕ\n\n"
+        f"Сейчас:\n"
+        f"{team['name']}\n\n"
+        "Введите новое название команды.",
+        reply_markup=back_keyboard(),
+    )
+
+    await callback.answer()
 
 
 # ============================================================
-# ОБЫЧНЫЙ МАТЧ
+# ЕДИНЫЙ ОБРАБОТЧИК ТЕКСТА
 # ============================================================
 
-def normal_result_keyboard():
+@dp.message(F.text)
+async def text_handler(
+    message: Message,
+):
 
-    builder = InlineKeyboardBuilder()
+    user_id = message.from_user.id
 
-    builder.button(
-        text="🏆 ПОБЕДА +100",
-        callback_data="normal_win",
-    )
+    state = user_state.get(user_id)
 
-    builder.button(
-        text="❌ Отмена",
-        callback_data="cancel",
-    )
+    # Если пользователь ничего не делает —
+    # игнорируем обычный текст.
 
-    builder.adjust(1)
+    if not state:
+        return
 
-    return builder.as_markup()
+    text = message.text.strip()
 
+    # ========================================================
+    # ДОБАВЛЕНИЕ БАЛЛОВ
+    # ========================================================
 
-# ============================================================
-# БОЛЬШОЙ ТУРНИР
-# ============================================================
+    if state.get("action") == "add_points":
 
-def tournament_result_keyboard():
+        try:
 
-    builder = InlineKeyboardBuilder()
+            points = int(text)
 
-    builder.button(
-        text="🥇 1 место",
-        callback_data="place:1",
-    )
+        except ValueError:
 
-    builder.button(
-        text="🥈 2 место",
-        callback_data="place:2",
-    )
+            await message.answer(
+                "❌ Введите только число.\n\n"
+                "Например:\n"
+                "250"
+            )
 
-    builder.button(
-        text="🥉 3 место",
-        callback_data="place:3",
-    )
+            return
 
-    builder.button(
-        text="❌ Отмена",
-        callback_data="cancel",
-    )
+        if points <= 0:
 
-    builder.adjust(1)
+            await message.answer(
+                "❌ Баллы должны быть больше 0.\n\n"
+                "Введите положительное число."
+            )
 
-    return builder.as_markup()
+            return
+
+        team_id = state.get("team_id")
+
+        if not team_id:
+
+            user_state.pop(
+                user_id,
+                None,
+            )
+
+            await message.answer(
+                "❌ Команда не выбрана.\n"
+                "Начните заново через /start."
+            )
+
+            return
+
+        # Информация о пользователе Telegram
+
+        username = message.from_user.username
+
+        first_name = message.from_user.first_name
+
+        # Начисляем баллы + записываем историю
+
+        new_score = add_points(
+            team_id=team_id,
+            points=points,
+            user_id=user_id,
+            username=username,
+            first_name=first_name,
+        )
+
+        team = get_team(team_id)
+
+        user_state.pop(
+            user_id,
+            None,
+        )
+
+        await message.answer(
+            "✅ ГОТОВО!\n\n"
+            f"👥 {team['name']}\n"
+            f"➕ +{points} баллов\n"
+            f"🏆 Новый счёт: {new_score}",
+            reply_markup=main_keyboard(),
+        )
+
+        return
+
+    # ========================================================
+    # ПЕРЕИМЕНОВАНИЕ КОМАНДЫ
+    # ========================================================
+
+    if state.get("action") == "rename_team":
+
+        new_name = text
+
+        if not new_name:
+
+            await message.answer(
+                "❌ Название не может быть пустым."
+            )
+
+            return
+
+        if len(new_name) > 40:
+
+            await message.answer(
+                "❌ Название слишком длинное.\n"
+                "Максимум 40 символов."
+            )
+
+            return
+
+        team_id = state.get("team_id")
+
+        if not team_id:
+
+            user_state.pop(
+                user_id,
+                None,
+            )
+
+            await message.answer(
+                "❌ Команда не выбрана.\n"
+                "Начните заново через /start."
+            )
+
+            return
+
+        team = rename_team(
+            team_id,
+            new_name,
+        )
+
+        user_state.pop(
+            user_id,
+            None,
+        )
+
+        await message.answer(
+            "✅ НАЗВАНИЕ ИЗМЕНЕНО!\n\n"
+            f"👥 {team['name']}\n"
+            f"🏆 Счёт: {team['score']}",
+            reply_markup=main_keyboard(),
+        )
+
+        return
 
 
 # ============================================================
 # ТАБЛО
 # ============================================================
 
-def build_scoreboard(teams):
+@dp.callback_query(
+    F.data == "scoreboard"
+)
+async def scoreboard(
+    callback: CallbackQuery,
+):
+
+    teams = get_teams()
+
+    sorted_teams = sorted(
+        teams,
+        key=lambda team: team["score"],
+        reverse=True,
+    )
 
     lines = [
         "🔥 CAMP WARS",
@@ -275,322 +513,121 @@ def build_scoreboard(teams):
     }
 
     for position, team in enumerate(
-        teams,
+        sorted_teams,
         start=1,
     ):
 
-        if position <= 3:
-            prefix = medals[position]
-        else:
-            prefix = f"{position}."
+        prefix = medals.get(
+            position,
+            f"{position}.",
+        )
 
         lines.append(
             f"{prefix} {team['name']} — {team['score']}"
         )
 
-    return "\n".join(lines)
-
-
-# ============================================================
-# /START
-# ============================================================
-
-@dp.message(Command("start"))
-async def start(
-    message: Message,
-):
-
-    await message.answer(
-        "🔥 CAMP WARS\n\n"
-        "Панель управления:",
+    await callback.message.edit_text(
+        "\n".join(lines),
         reply_markup=main_keyboard(),
     )
 
-
-# ============================================================
-# ЗАПИСАТЬ РЕЗУЛЬТАТ
-# ============================================================
-
-@dp.callback_query(
-    F.data == "add_result"
-)
-async def add_result_start(
-    callback: CallbackQuery,
-):
-
-    await callback.message.edit_text(
-        "👥 Выберите команду:",
-        reply_markup=teams_keyboard(),
-    )
-
     await callback.answer()
 
 
 # ============================================================
-# ВЫБОР КОМАНДЫ
+# ИСТОРИЯ
 # ============================================================
 
 @dp.callback_query(
-    F.data.startswith("team:")
+    F.data == "history"
 )
-async def select_team(
+async def history(
     callback: CallbackQuery,
 ):
 
-    index = int(
-        callback.data.split(":")[1]
+    history_items = get_history(
+        limit=30
     )
 
-    team = TEAMS[index]
-
-    user_state[
-        callback.from_user.id
-    ] = {
-        "team": team
-    }
-
-    await callback.message.edit_text(
-        f"👥 Команда:\n\n"
-        f"{team}\n\n"
-        f"🎯 Выберите активность:",
-        reply_markup=activities_keyboard(),
-    )
-
-    await callback.answer()
-
-
-# ============================================================
-# ВЫБОР АКТИВНОСТИ
-# ============================================================
-
-@dp.callback_query(
-    F.data.startswith("normal:")
-    | F.data.startswith("tournament:")
-)
-async def select_activity(
-    callback: CallbackQuery,
-):
-
-    kind, index = callback.data.split(":")
-
-    index = int(index)
-
-    state = user_state.get(
-        callback.from_user.id
-    )
-
-    if not state:
-
-        await callback.answer(
-            "Сессия устарела. Начните заново.",
-            show_alert=True,
-        )
-
-        return
-
-    # Обычный матч
-
-    if kind == "normal":
-
-        activity = NORMAL_ACTIVITIES[index]
-
-        state["activity"] = activity
-        state["kind"] = "normal"
+    if not history_items:
 
         await callback.message.edit_text(
-            f"👥 {state['team']}\n\n"
-            f"🎯 {activity}\n\n"
-            f"Результат:",
-            reply_markup=normal_result_keyboard(),
+            "📜 ИСТОРИЯ\n\n"
+            "Пока изменений нет.",
+            reply_markup=back_keyboard(),
         )
 
-    # Турнир
-
-    else:
-
-        activity = TOURNAMENT_ACTIVITIES[index]
-
-        state["activity"] = activity
-        state["kind"] = "tournament"
-
-        await callback.message.edit_text(
-            f"👥 {state['team']}\n\n"
-            f"🎯 {activity}\n\n"
-            f"Выберите место:",
-            reply_markup=tournament_result_keyboard(),
-        )
-
-    await callback.answer()
-
-
-# ============================================================
-# ПОБЕДА В ОБЫЧНОМ МАТЧЕ
-# ============================================================
-
-@dp.callback_query(
-    F.data == "normal_win"
-)
-async def normal_win(
-    callback: CallbackQuery,
-):
-
-    state = user_state.get(
-        callback.from_user.id
-    )
-
-    if not state:
-
-        await callback.answer(
-            "Сессия устарела. Начните заново.",
-            show_alert=True,
-        )
+        await callback.answer()
 
         return
 
-    team = state["team"]
-    activity = state["activity"]
+    lines = [
+        "📜 ИСТОРИЯ ИЗМЕНЕНИЙ",
+        "",
+    ]
 
-    new_score = add_points(
-        team,
-        NORMAL_WIN_POINTS,
-    )
+    for item in history_items:
 
-    await callback.message.edit_text(
-        "✅ Результат записан!\n\n"
-        f"👥 {team}\n"
-        f"🎯 {activity}\n"
-        f"🏆 Победа\n\n"
-        f"➕ {NORMAL_WIN_POINTS} очков\n\n"
-        f"💰 Всего команды: {new_score}",
-        reply_markup=main_keyboard(),
-    )
+        # Кто сделал изменение
 
-    user_state.pop(
-        callback.from_user.id,
-        None,
-    )
+        if item["username"]:
 
-    await callback.answer(
-        "Очки начислены!"
-    )
+            author = (
+                f"@{item['username']}"
+            )
 
+        elif item["first_name"]:
 
-# ============================================================
-# МЕСТО В ТУРНИРЕ
-# ============================================================
+            author = item["first_name"]
 
-@dp.callback_query(
-    F.data.startswith("place:")
-)
-async def tournament_place(
-    callback: CallbackQuery,
-):
+        else:
 
-    state = user_state.get(
-        callback.from_user.id
-    )
+            author = (
+                f"ID {item['user_id']}"
+            )
 
-    if not state:
+        # Баллы
 
-        await callback.answer(
-            "Сессия устарела. Начните заново.",
-            show_alert=True,
+        points = item["points"]
+
+        if points > 0:
+
+            points_text = (
+                f"+{points}"
+            )
+
+        else:
+
+            points_text = str(points)
+
+        # Дата
+
+        created_at = str(
+            item["created_at"]
         )
 
-        return
+        # SQLite хранит дату в UTC.
+        # Пока показываем её компактно.
 
-    place = int(
-        callback.data.split(":")[1]
-    )
+        if len(created_at) >= 16:
 
-    team = state["team"]
-    activity = state["activity"]
+            created_at = created_at[:16]
 
-    if activity == "🔥 Гранд-финал":
+        lines.append(
+            f"🕐 {created_at}\n"
+            f"👥 {item['team_name']}\n"
+            f"💰 {points_text} → {item['new_score']}\n"
+            f"👤 {author}\n"
+        )
 
-        points = FINAL_POINTS[place]
-
-    else:
-
-        points = TOURNAMENT_POINTS[place]
-
-    new_score = add_points(
-        team,
-        points,
-    )
-
-    medals = {
-        1: "🥇",
-        2: "🥈",
-        3: "🥉",
-    }
+    text = "\n".join(lines)
 
     await callback.message.edit_text(
-        "✅ Результат записан!\n\n"
-        f"👥 {team}\n"
-        f"🎯 {activity}\n"
-        f"{medals[place]} {place} место\n\n"
-        f"➕ {points} очков\n\n"
-        f"💰 Всего команды: {new_score}",
-        reply_markup=main_keyboard(),
-    )
-
-    user_state.pop(
-        callback.from_user.id,
-        None,
-    )
-
-    await callback.answer(
-        "Очки начислены!"
-    )
-
-
-# ============================================================
-# ТАБЛО
-# ============================================================
-
-@dp.callback_query(
-    F.data == "scoreboard"
-)
-async def scoreboard(
-    callback: CallbackQuery,
-):
-
-    teams = get_scores()
-
-    await callback.message.edit_text(
-        build_scoreboard(teams),
-        reply_markup=main_keyboard(),
+        text,
+        reply_markup=back_keyboard(),
     )
 
     await callback.answer()
-
-
-# ============================================================
-# ОТМЕНА
-# ============================================================
-
-@dp.callback_query(
-    F.data == "cancel"
-)
-async def cancel(
-    callback: CallbackQuery,
-):
-
-    user_state.pop(
-        callback.from_user.id,
-        None,
-    )
-
-    await callback.message.edit_text(
-        "🔥 CAMP WARS\n\n"
-        "Панель управления:",
-        reply_markup=main_keyboard(),
-    )
-
-    await callback.answer(
-        "Отменено"
-    )
 
 
 # ============================================================
@@ -616,6 +653,5 @@ async def main():
 
 if __name__ == "__main__":
 
-    asyncio.run(
-        main()
-    )
+    asyncio.run(main())
+```
