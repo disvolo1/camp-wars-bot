@@ -1,10 +1,17 @@
 import os
 import logging
+import asyncio
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
 from aiogram.types import Message, CallbackQuery
 from aiogram.utils.keyboard import InlineKeyboardBuilder
+
+from database import (
+    init_database,
+    add_points,
+    get_scores,
+)
 
 
 # =========================
@@ -13,13 +20,15 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
-# Telegram ID пользователей, которым разрешено пользоваться ботом.
-# Например: ADMIN_IDS=123456789,987654321
 ADMIN_IDS = {
     int(user_id.strip())
     for user_id in os.getenv("ADMIN_IDS", "").split(",")
     if user_id.strip()
 }
+
+
+if not BOT_TOKEN:
+    raise RuntimeError("Не задан BOT_TOKEN")
 
 
 # =========================
@@ -40,7 +49,10 @@ TEAMS = [
 ]
 
 
-# Обычные матчи
+# =========================
+# АКТИВНОСТИ
+# =========================
+
 NORMAL_ACTIVITIES = [
     "🏓 Пинг-понг",
     "🏐 Волейбол",
@@ -51,7 +63,6 @@ NORMAL_ACTIVITIES = [
 ]
 
 
-# Большие турниры
 TOURNAMENT_ACTIVITIES = [
     "🏆 Большой турнир по пинг-понгу",
     "🏆 Большой турнир по волейболу",
@@ -60,7 +71,10 @@ TOURNAMENT_ACTIVITIES = [
 ]
 
 
-# Очки
+# =========================
+# ОЧКИ
+# =========================
+
 NORMAL_WIN_POINTS = 100
 
 TOURNAMENT_POINTS = {
@@ -77,35 +91,31 @@ FINAL_POINTS = {
 
 
 # =========================
-# ВРЕМЕННЫЕ ДАННЫЕ
-# =========================
-
-# Пока храним всё в памяти.
-# На следующем этапе перенесём это в PostgreSQL.
-scores = {
-    team: 0
-    for team in TEAMS
-}
-
-
-# =========================
 # BOT
 # =========================
 
-logging.basicConfig(level=logging.INFO)
-
-if not BOT_TOKEN:
-    raise RuntimeError("Не задан BOT_TOKEN")
+logging.basicConfig(
+    level=logging.INFO
+)
 
 bot = Bot(BOT_TOKEN)
+
 dp = Dispatcher()
 
 
 # =========================
-# ПРОВЕРКА ДОСТУПА
+# СОСТОЯНИЕ
+# =========================
+
+user_state = {}
+
+
+# =========================
+# ДОСТУП
 # =========================
 
 def is_admin(user_id: int) -> bool:
+
     return user_id in ADMIN_IDS
 
 
@@ -114,16 +124,17 @@ def is_admin(user_id: int) -> bool:
 # =========================
 
 def main_keyboard():
+
     builder = InlineKeyboardBuilder()
 
     builder.button(
         text="➕ Записать результат",
-        callback_data="add_result"
+        callback_data="add_result",
     )
 
     builder.button(
         text="🏆 Табло",
-        callback_data="scoreboard"
+        callback_data="scoreboard",
     )
 
     builder.adjust(1)
@@ -132,12 +143,14 @@ def main_keyboard():
 
 
 def teams_keyboard():
+
     builder = InlineKeyboardBuilder()
 
     for index, team in enumerate(TEAMS):
+
         builder.button(
             text=team,
-            callback_data=f"team:{index}"
+            callback_data=f"team:{index}",
         )
 
     builder.adjust(2)
@@ -146,18 +159,25 @@ def teams_keyboard():
 
 
 def activities_keyboard():
+
     builder = InlineKeyboardBuilder()
 
-    for index, activity in enumerate(NORMAL_ACTIVITIES):
+    for index, activity in enumerate(
+        NORMAL_ACTIVITIES
+    ):
+
         builder.button(
             text=activity,
-            callback_data=f"normal:{index}"
+            callback_data=f"normal:{index}",
         )
 
-    for index, activity in enumerate(TOURNAMENT_ACTIVITIES):
+    for index, activity in enumerate(
+        TOURNAMENT_ACTIVITIES
+    ):
+
         builder.button(
             text=activity,
-            callback_data=f"tournament:{index}"
+            callback_data=f"tournament:{index}",
         )
 
     builder.adjust(1)
@@ -166,16 +186,17 @@ def activities_keyboard():
 
 
 def normal_result_keyboard():
+
     builder = InlineKeyboardBuilder()
 
     builder.button(
         text="🏆 ПОБЕДА +100",
-        callback_data="normal_win"
+        callback_data="normal_win",
     )
 
     builder.button(
         text="❌ Отмена",
-        callback_data="cancel"
+        callback_data="cancel",
     )
 
     builder.adjust(1)
@@ -184,26 +205,27 @@ def normal_result_keyboard():
 
 
 def tournament_result_keyboard():
+
     builder = InlineKeyboardBuilder()
 
     builder.button(
         text="🥇 1 место",
-        callback_data="place:1"
+        callback_data="place:1",
     )
 
     builder.button(
         text="🥈 2 место",
-        callback_data="place:2"
+        callback_data="place:2",
     )
 
     builder.button(
         text="🥉 3 место",
-        callback_data="place:3"
+        callback_data="place:3",
     )
 
     builder.button(
         text="❌ Отмена",
-        callback_data="cancel"
+        callback_data="cancel",
     )
 
     builder.adjust(1)
@@ -215,40 +237,36 @@ def tournament_result_keyboard():
 # ТАБЛО
 # =========================
 
-def get_scoreboard_text():
-    sorted_scores = sorted(
-        scores.items(),
-        key=lambda item: item[1],
-        reverse=True
-    )
+def build_scoreboard(teams):
 
     lines = [
         "🔥 CAMP WARS",
         "",
         "🏆 ОБЩИЙ РЕЙТИНГ",
-        ""
+        "",
     ]
 
     medals = {
         1: "🥇",
         2: "🥈",
-        3: "🥉"
+        3: "🥉",
     }
 
-    for position, (team, score) in enumerate(sorted_scores, start=1):
-        prefix = medals.get(position, f"{position}.")
+    for position, team in enumerate(
+        teams,
+        start=1,
+    ):
+
+        prefix = medals.get(
+            position,
+            f"{position}.",
+        )
+
         lines.append(
-            f"{prefix} {team} — {score}"
+            f"{prefix} {team.name} — {team.score}"
         )
 
     return "\n".join(lines)
-
-
-# =========================
-# СОСТОЯНИЕ ПОЛЬЗОВАТЕЛЕЙ
-# =========================
-
-user_state = {}
 
 
 # =========================
@@ -258,107 +276,144 @@ user_state = {}
 @dp.message(Command("start"))
 async def start(message: Message):
 
-    if not is_admin(message.from_user.id):
+    if not is_admin(
+        message.from_user.id
+    ):
+
         await message.answer(
             "⛔ Доступ закрыт."
         )
+
         return
 
     await message.answer(
         "🔥 CAMP WARS\n\n"
-        "Панель управления результатами:",
-        reply_markup=main_keyboard()
+        "Панель управления:",
+        reply_markup=main_keyboard(),
     )
 
 
 # =========================
-# ЗАПИСАТЬ РЕЗУЛЬТАТ
+# ДОБАВИТЬ РЕЗУЛЬТАТ
 # =========================
 
-@dp.callback_query(F.data == "add_result")
-async def add_result(callback: CallbackQuery):
+@dp.callback_query(
+    F.data == "add_result"
+)
+async def add_result_start(
+    callback: CallbackQuery,
+):
 
-    if not is_admin(callback.from_user.id):
+    if not is_admin(
+        callback.from_user.id
+    ):
+
         await callback.answer(
             "⛔ Доступ закрыт",
-            show_alert=True
+            show_alert=True,
         )
+
         return
 
     await callback.message.edit_text(
         "👥 Выберите команду:",
-        reply_markup=teams_keyboard()
+        reply_markup=teams_keyboard(),
     )
 
     await callback.answer()
 
 
 # =========================
-# ВЫБОР КОМАНДЫ
+# КОМАНДА
 # =========================
 
-@dp.callback_query(F.data.startswith("team:"))
-async def select_team(callback: CallbackQuery):
+@dp.callback_query(
+    F.data.startswith("team:")
+)
+async def select_team(
+    callback: CallbackQuery,
+):
 
-    if not is_admin(callback.from_user.id):
+    if not is_admin(
+        callback.from_user.id
+    ):
+
         await callback.answer(
             "⛔ Доступ закрыт",
-            show_alert=True
+            show_alert=True,
         )
+
         return
 
-    team_index = int(
+    index = int(
         callback.data.split(":")[1]
     )
 
-    team = TEAMS[team_index]
+    team = TEAMS[index]
 
-    user_state[callback.from_user.id] = {
+    user_state[
+        callback.from_user.id
+    ] = {
         "team": team
     }
 
     await callback.message.edit_text(
         f"👥 Команда:\n\n"
         f"{team}\n\n"
-        f"🎯 Теперь выберите активность:",
-        reply_markup=activities_keyboard()
+        f"🎯 Выберите активность:",
+        reply_markup=activities_keyboard(),
     )
 
     await callback.answer()
 
 
 # =========================
-# ВЫБОР АКТИВНОСТИ
+# АКТИВНОСТЬ
 # =========================
 
 @dp.callback_query(
     F.data.startswith("normal:")
     | F.data.startswith("tournament:")
 )
-async def select_activity(callback: CallbackQuery):
+async def select_activity(
+    callback: CallbackQuery,
+):
 
-    if not is_admin(callback.from_user.id):
+    if not is_admin(
+        callback.from_user.id
+    ):
+
         await callback.answer(
             "⛔ Доступ закрыт",
-            show_alert=True
+            show_alert=True,
         )
+
         return
 
-    kind, index = callback.data.split(":")
+    kind, index = (
+        callback.data.split(":")
+    )
+
     index = int(index)
 
-    state = user_state.get(callback.from_user.id)
+    state = user_state.get(
+        callback.from_user.id
+    )
 
     if not state:
+
         await callback.answer(
             "Начните заново",
-            show_alert=True
+            show_alert=True,
         )
+
         return
 
     if kind == "normal":
 
-        activity = NORMAL_ACTIVITIES[index]
+        activity = (
+            NORMAL_ACTIVITIES[index]
+        )
 
         state["activity"] = activity
         state["kind"] = "normal"
@@ -367,12 +422,14 @@ async def select_activity(callback: CallbackQuery):
             f"{state['team']}\n"
             f"{activity}\n\n"
             f"Результат:",
-            reply_markup=normal_result_keyboard()
+            reply_markup=normal_result_keyboard(),
         )
 
     else:
 
-        activity = TOURNAMENT_ACTIVITIES[index]
+        activity = (
+            TOURNAMENT_ACTIVITIES[index]
+        )
 
         state["activity"] = activity
         state["kind"] = "tournament"
@@ -381,7 +438,7 @@ async def select_activity(callback: CallbackQuery):
             f"{state['team']}\n"
             f"{activity}\n\n"
             f"Выберите место:",
-            reply_markup=tournament_result_keyboard()
+            reply_markup=tournament_result_keyboard(),
         )
 
     await callback.answer()
@@ -391,31 +448,44 @@ async def select_activity(callback: CallbackQuery):
 # ОБЫЧНАЯ ПОБЕДА
 # =========================
 
-@dp.callback_query(F.data == "normal_win")
-async def normal_win(callback: CallbackQuery):
+@dp.callback_query(
+    F.data == "normal_win"
+)
+async def normal_win(
+    callback: CallbackQuery,
+):
 
-    if not is_admin(callback.from_user.id):
+    if not is_admin(
+        callback.from_user.id
+    ):
+
         await callback.answer(
             "⛔ Доступ закрыт",
-            show_alert=True
+            show_alert=True,
         )
+
         return
 
-    state = user_state.get(callback.from_user.id)
+    state = user_state.get(
+        callback.from_user.id
+    )
 
     if not state:
+
         await callback.answer(
             "Начните заново",
-            show_alert=True
+            show_alert=True,
         )
+
         return
 
     team = state["team"]
     activity = state["activity"]
 
-    scores[team] += NORMAL_WIN_POINTS
-
-    new_score = scores[team]
+    new_score = await add_points(
+        team,
+        NORMAL_WIN_POINTS,
+    )
 
     await callback.message.edit_text(
         f"✅ Результат записан!\n\n"
@@ -424,35 +494,52 @@ async def normal_win(callback: CallbackQuery):
         f"🏆 Победа\n\n"
         f"+{NORMAL_WIN_POINTS} очков\n\n"
         f"💰 Всего команды: {new_score}",
-        reply_markup=main_keyboard()
+        reply_markup=main_keyboard(),
     )
 
-    user_state.pop(callback.from_user.id, None)
+    user_state.pop(
+        callback.from_user.id,
+        None,
+    )
 
-    await callback.answer("Очки начислены!")
+    await callback.answer(
+        "Очки начислены!"
+    )
 
 
 # =========================
-# МЕСТО В ТУРНИРЕ
+# ТУРНИР
 # =========================
 
-@dp.callback_query(F.data.startswith("place:"))
-async def tournament_place(callback: CallbackQuery):
+@dp.callback_query(
+    F.data.startswith("place:")
+)
+async def tournament_place(
+    callback: CallbackQuery,
+):
 
-    if not is_admin(callback.from_user.id):
+    if not is_admin(
+        callback.from_user.id
+    ):
+
         await callback.answer(
             "⛔ Доступ закрыт",
-            show_alert=True
+            show_alert=True,
         )
+
         return
 
-    state = user_state.get(callback.from_user.id)
+    state = user_state.get(
+        callback.from_user.id
+    )
 
     if not state:
+
         await callback.answer(
             "Начните заново",
-            show_alert=True
+            show_alert=True,
         )
+
         return
 
     place = int(
@@ -463,18 +550,22 @@ async def tournament_place(callback: CallbackQuery):
     activity = state["activity"]
 
     if activity == "🔥 Гранд-финал":
+
         points = FINAL_POINTS[place]
+
     else:
+
         points = TOURNAMENT_POINTS[place]
 
-    scores[team] += points
-
-    new_score = scores[team]
+    new_score = await add_points(
+        team,
+        points,
+    )
 
     medals = {
         1: "🥇",
         2: "🥈",
-        3: "🥉"
+        3: "🥉",
     }
 
     await callback.message.edit_text(
@@ -484,31 +575,46 @@ async def tournament_place(callback: CallbackQuery):
         f"{medals[place]} {place} место\n\n"
         f"+{points} очков\n\n"
         f"💰 Всего команды: {new_score}",
-        reply_markup=main_keyboard()
+        reply_markup=main_keyboard(),
     )
 
-    user_state.pop(callback.from_user.id, None)
+    user_state.pop(
+        callback.from_user.id,
+        None,
+    )
 
-    await callback.answer("Очки начислены!")
+    await callback.answer(
+        "Очки начислены!"
+    )
 
 
 # =========================
 # ТАБЛО
 # =========================
 
-@dp.callback_query(F.data == "scoreboard")
-async def scoreboard(callback: CallbackQuery):
+@dp.callback_query(
+    F.data == "scoreboard"
+)
+async def scoreboard(
+    callback: CallbackQuery,
+):
 
-    if not is_admin(callback.from_user.id):
+    if not is_admin(
+        callback.from_user.id
+    ):
+
         await callback.answer(
             "⛔ Доступ закрыт",
-            show_alert=True
+            show_alert=True,
         )
+
         return
 
+    teams = await get_scores()
+
     await callback.message.edit_text(
-        get_scoreboard_text(),
-        reply_markup=main_keyboard()
+        build_scoreboard(teams),
+        reply_markup=main_keyboard(),
     )
 
     await callback.answer()
@@ -518,18 +624,22 @@ async def scoreboard(callback: CallbackQuery):
 # ОТМЕНА
 # =========================
 
-@dp.callback_query(F.data == "cancel")
-async def cancel(callback: CallbackQuery):
+@dp.callback_query(
+    F.data == "cancel"
+)
+async def cancel(
+    callback: CallbackQuery,
+):
 
     user_state.pop(
         callback.from_user.id,
-        None
+        None,
     )
 
     await callback.message.edit_text(
         "🔥 CAMP WARS\n\n"
-        "Панель управления результатами:",
-        reply_markup=main_keyboard()
+        "Панель управления:",
+        reply_markup=main_keyboard(),
     )
 
     await callback.answer()
@@ -541,12 +651,15 @@ async def cancel(callback: CallbackQuery):
 
 async def main():
 
-    print("🔥 CAMP WARS BOT STARTED")
+    print(
+        "🔥 CAMP WARS BOT STARTED"
+    )
+
+    await init_database()
 
     await dp.start_polling(bot)
 
 
 if __name__ == "__main__":
-    import asyncio
 
     asyncio.run(main())
