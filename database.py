@@ -1,253 +1,865 @@
-import sqlite3
-from pathlib import Path
+```python
+import os
+from datetime import datetime
+
+from sqlalchemy import (
+    create_engine,
+    Column,
+    Integer,
+    BigInteger,
+    String,
+    DateTime,
+    Text,
+)
+from sqlalchemy.orm import declarative_base, sessionmaker
 
 
-DB_PATH = Path("camp_wars.db")
+# ============================================================
+# DATABASE
+# ============================================================
+
+DATABASE_URL = os.getenv("DATABASE_URL")
+
+if not DATABASE_URL:
+    raise RuntimeError("Не задан DATABASE_URL")
+
+# Render/PostgreSQL иногда отдаёт postgres://
+# SQLAlchemy использует postgresql://
+if DATABASE_URL.startswith("postgres://"):
+    DATABASE_URL = DATABASE_URL.replace(
+        "postgres://",
+        "postgresql://",
+        1,
+    )
+
+engine = create_engine(
+    DATABASE_URL,
+    pool_pre_ping=True,
+)
+
+SessionLocal = sessionmaker(
+    bind=engine,
+    expire_on_commit=False,
+)
+
+Base = declarative_base()
 
 
-DEFAULT_TEAMS = [
-    "🐻 Медведи",
-    "🦊 Лисы",
-    "🐺 Волки",
-    "🦁 Львы",
-    "🐯 Тигры",
-    "🐼 Панды",
-    "🐸 Лягушки",
-    "🦅 Орлы",
-    "🦄 Единороги",
-    "🦈 Акулы",
-]
+# ============================================================
+# КОМАНДЫ
+# ============================================================
+
+class Team(Base):
+    __tablename__ = "teams"
+
+    id = Column(
+        Integer,
+        primary_key=True,
+    )
+
+    name = Column(
+        String(100),
+        nullable=False,
+    )
+
+    score = Column(
+        Integer,
+        default=0,
+        nullable=False,
+    )
 
 
-def get_connection():
-    connection = sqlite3.connect(DB_PATH)
-    connection.row_factory = sqlite3.Row
-    return connection
+# ============================================================
+# ПОЛЬЗОВАТЕЛИ / КАПИТАНЫ
+# ============================================================
 
+class User(Base):
+    __tablename__ = "users"
+
+    id = Column(
+        BigInteger,
+        primary_key=True,
+    )
+
+    username = Column(
+        String(100),
+        nullable=True,
+    )
+
+    first_name = Column(
+        String(100),
+        nullable=True,
+    )
+
+    team_id = Column(
+        Integer,
+        nullable=True,
+    )
+
+
+# ============================================================
+# ИСТОРИЯ НАЧИСЛЕНИЙ
+# ============================================================
+
+class PointsHistory(Base):
+    __tablename__ = "points_history"
+
+    id = Column(
+        Integer,
+        primary_key=True,
+    )
+
+    team_id = Column(
+        Integer,
+        nullable=False,
+    )
+
+    team_name = Column(
+        String(100),
+        nullable=False,
+    )
+
+    points = Column(
+        Integer,
+        nullable=False,
+    )
+
+    new_score = Column(
+        Integer,
+        nullable=False,
+    )
+
+    user_id = Column(
+        BigInteger,
+        nullable=False,
+    )
+
+    username = Column(
+        String(100),
+        nullable=True,
+    )
+
+    first_name = Column(
+        String(100),
+        nullable=True,
+    )
+
+    activity = Column(
+        String(255),
+        nullable=True,
+    )
+
+    result = Column(
+        String(255),
+        nullable=True,
+    )
+
+    created_at = Column(
+        DateTime,
+        default=datetime.utcnow,
+        nullable=False,
+    )
+
+
+# ============================================================
+# СЕКРЕТНЫЕ МИССИИ
+# ============================================================
+
+class Mission(Base):
+    __tablename__ = "missions"
+
+    id = Column(
+        Integer,
+        primary_key=True,
+    )
+
+    title = Column(
+        String(255),
+        nullable=False,
+    )
+
+    description = Column(
+        Text,
+        nullable=False,
+    )
+
+    points = Column(
+        Integer,
+        nullable=False,
+    )
+
+    created_at = Column(
+        DateTime,
+        default=datetime.utcnow,
+        nullable=False,
+    )
+
+
+# ============================================================
+# ВЫДАННЫЕ МИССИИ
+# ============================================================
+
+class IssuedMission(Base):
+    __tablename__ = "issued_missions"
+
+    id = Column(
+        Integer,
+        primary_key=True,
+    )
+
+    mission_id = Column(
+        Integer,
+        nullable=False,
+    )
+
+    team_id = Column(
+        Integer,
+        nullable=False,
+    )
+
+    issued_to_user_id = Column(
+        BigInteger,
+        nullable=True,
+    )
+
+    status = Column(
+        String(50),
+        default="active",
+        nullable=False,
+    )
+
+    issued_at = Column(
+        DateTime,
+        default=datetime.utcnow,
+        nullable=False,
+    )
+
+    completed_at = Column(
+        DateTime,
+        nullable=True,
+    )
+
+
+# ============================================================
+# СОЗДАНИЕ ТАБЛИЦ
+# ============================================================
 
 def init_database():
-    connection = get_connection()
-    cursor = connection.cursor()
 
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS teams (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL,
-            score INTEGER NOT NULL DEFAULT 0
-        )
-    """)
-
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS score_history (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            team_id INTEGER NOT NULL,
-            team_name TEXT NOT NULL,
-            points INTEGER NOT NULL,
-            new_score INTEGER NOT NULL,
-            user_id INTEGER NOT NULL,
-            username TEXT,
-            first_name TEXT,
-            activity TEXT,
-            result TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-
-    # Для уже существующей базы добавляем новые колонки,
-    # если их ещё нет.
-    cursor.execute(
-        "PRAGMA table_info(score_history)"
+    Base.metadata.create_all(
+        bind=engine
     )
 
-    columns = {
-        row["name"]
-        for row in cursor.fetchall()
-    }
+    # Если команд ещё нет —
+    # создаём 10 стандартных команд.
 
-    if "activity" not in columns:
-        cursor.execute("""
-            ALTER TABLE score_history
-            ADD COLUMN activity TEXT
-        """)
+    with SessionLocal() as session:
 
-    if "result" not in columns:
-        cursor.execute("""
-            ALTER TABLE score_history
-            ADD COLUMN result TEXT
-        """)
+        existing = (
+            session.query(Team)
+            .count()
+        )
 
-    cursor.execute(
-        "SELECT COUNT(*) FROM teams"
-    )
+        if existing == 0:
 
-    count = cursor.fetchone()[0]
+            default_names = [
+                "Команда 1",
+                "Команда 2",
+                "Команда 3",
+                "Команда 4",
+                "Команда 5",
+                "Команда 6",
+                "Команда 7",
+                "Команда 8",
+                "Команда 9",
+                "Команда 10",
+            ]
 
-    if count == 0:
-        for team_name in DEFAULT_TEAMS:
-            cursor.execute("""
-                INSERT INTO teams (name, score)
-                VALUES (?, 0)
-            """, (team_name,))
+            for name in default_names:
 
-    connection.commit()
-    connection.close()
+                session.add(
+                    Team(
+                        name=name,
+                        score=0,
+                    )
+                )
 
+            session.commit()
+
+
+# ============================================================
+# КОМАНДЫ
+# ============================================================
 
 def get_teams():
-    connection = get_connection()
-    cursor = connection.cursor()
 
-    cursor.execute("""
-        SELECT id, name, score
-        FROM teams
-        ORDER BY id
-    """)
+    with SessionLocal() as session:
 
-    teams = cursor.fetchall()
-
-    connection.close()
-
-    return teams
-
-
-def get_team(team_id: int):
-    connection = get_connection()
-    cursor = connection.cursor()
-
-    cursor.execute("""
-        SELECT id, name, score
-        FROM teams
-        WHERE id = ?
-    """, (team_id,))
-
-    team = cursor.fetchone()
-
-    connection.close()
-
-    return team
-
-
-def add_points(
-    team_id: int,
-    points: int,
-    user_id: int,
-    username: str | None,
-    first_name: str | None,
-    activity: str | None = None,
-    result: str | None = None,
-):
-    connection = get_connection()
-    cursor = connection.cursor()
-
-    cursor.execute("""
-        SELECT id, name, score
-        FROM teams
-        WHERE id = ?
-    """, (team_id,))
-
-    team = cursor.fetchone()
-
-    if team is None:
-        connection.close()
-        raise ValueError("Команда не найдена")
-
-    new_score = team["score"] + points
-
-    cursor.execute("""
-        UPDATE teams
-        SET score = ?
-        WHERE id = ?
-    """, (
-        new_score,
-        team_id,
-    ))
-
-    cursor.execute("""
-        INSERT INTO score_history (
-            team_id,
-            team_name,
-            points,
-            new_score,
-            user_id,
-            username,
-            first_name,
-            activity,
-            result
+        teams = (
+            session.query(Team)
+            .order_by(Team.id)
+            .all()
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """, (
-        team_id,
-        team["name"],
-        points,
-        new_score,
-        user_id,
-        username,
-        first_name,
-        activity,
-        result,
-    ))
 
-    connection.commit()
-    connection.close()
+        return [
+            {
+                "id": team.id,
+                "name": team.name,
+                "score": team.score,
+            }
+            for team in teams
+        ]
 
-    return new_score
+
+def get_team(team_id):
+
+    with SessionLocal() as session:
+
+        team = (
+            session.query(Team)
+            .filter(
+                Team.id == team_id
+            )
+            .first()
+        )
+
+        if not team:
+            return None
+
+        return {
+            "id": team.id,
+            "name": team.name,
+            "score": team.score,
+        }
 
 
 def rename_team(
-    team_id: int,
-    new_name: str,
+    team_id,
+    new_name,
 ):
-    connection = get_connection()
-    cursor = connection.cursor()
 
-    cursor.execute("""
-        UPDATE teams
-        SET name = ?
-        WHERE id = ?
-    """, (
-        new_name,
-        team_id,
-    ))
+    with SessionLocal() as session:
 
-    connection.commit()
+        team = (
+            session.query(Team)
+            .filter(
+                Team.id == team_id
+            )
+            .first()
+        )
 
-    cursor.execute("""
-        SELECT id, name, score
-        FROM teams
-        WHERE id = ?
-    """, (team_id,))
+        if not team:
+            return None
 
-    team = cursor.fetchone()
+        team.name = new_name
 
-    connection.close()
+        session.commit()
 
-    return team
+        return {
+            "id": team.id,
+            "name": team.name,
+            "score": team.score,
+        }
 
 
-def get_history(limit: int = 50):
-    connection = get_connection()
-    cursor = connection.cursor()
+# ============================================================
+# НАЧИСЛЕНИЕ БАЛЛОВ
+# ============================================================
 
-    cursor.execute("""
-        SELECT
-            id,
-            team_id,
-            team_name,
-            points,
-            new_score,
-            user_id,
-            username,
-            first_name,
-            activity,
-            result,
-            created_at
-        FROM score_history
-        ORDER BY id DESC
-        LIMIT ?
-    """, (limit,))
+def add_points(
+    team_id,
+    points,
+    user_id,
+    username=None,
+    first_name=None,
+    activity=None,
+    result=None,
+):
 
-    history = cursor.fetchall()
+    with SessionLocal() as session:
 
-    connection.close()
+        team = (
+            session.query(Team)
+            .filter(
+                Team.id == team_id
+            )
+            .first()
+        )
 
-    return history
+        if not team:
+            return None
+
+        team.score += points
+
+        history = PointsHistory(
+            team_id=team.id,
+            team_name=team.name,
+            points=points,
+            new_score=team.score,
+            user_id=user_id,
+            username=username,
+            first_name=first_name,
+            activity=activity,
+            result=result,
+        )
+
+        session.add(history)
+
+        session.commit()
+
+        return team.score
+
+
+# ============================================================
+# ИСТОРИЯ
+# ============================================================
+
+def get_history(
+    limit=30,
+):
+
+    with SessionLocal() as session:
+
+        rows = (
+            session.query(
+                PointsHistory
+            )
+            .order_by(
+                PointsHistory.id.desc()
+            )
+            .limit(limit)
+            .all()
+        )
+
+        return [
+            {
+                "id": row.id,
+                "team_id": row.team_id,
+                "team_name": row.team_name,
+                "points": row.points,
+                "new_score": row.new_score,
+                "user_id": row.user_id,
+                "username": row.username,
+                "first_name": row.first_name,
+                "activity": row.activity,
+                "result": row.result,
+                "created_at": row.created_at.strftime(
+                    "%d.%m %H:%M"
+                ),
+            }
+            for row in rows
+        ]
+
+
+# ============================================================
+# ПОЛЬЗОВАТЕЛИ
+# ============================================================
+
+def save_user(
+    user_id,
+    username=None,
+    first_name=None,
+):
+
+    with SessionLocal() as session:
+
+        user = (
+            session.query(User)
+            .filter(
+                User.id == user_id
+            )
+            .first()
+        )
+
+        if not user:
+
+            user = User(
+                id=user_id,
+                username=username,
+                first_name=first_name,
+            )
+
+            session.add(user)
+
+        else:
+
+            user.username = username
+            user.first_name = first_name
+
+        session.commit()
+
+
+def get_user(
+    user_id,
+):
+
+    with SessionLocal() as session:
+
+        user = (
+            session.query(User)
+            .filter(
+                User.id == user_id
+            )
+            .first()
+        )
+
+        if not user:
+            return None
+
+        return {
+            "id": user.id,
+            "username": user.username,
+            "first_name": user.first_name,
+            "team_id": user.team_id,
+        }
+
+
+def set_user_team(
+    user_id,
+    team_id,
+):
+
+    with SessionLocal() as session:
+
+        user = (
+            session.query(User)
+            .filter(
+                User.id == user_id
+            )
+            .first()
+        )
+
+        if not user:
+
+            user = User(
+                id=user_id,
+                team_id=team_id,
+            )
+
+            session.add(user)
+
+        else:
+
+            user.team_id = team_id
+
+        session.commit()
+
+
+# ============================================================
+# МИССИИ
+# ============================================================
+
+def create_mission(
+    title,
+    description,
+    points,
+):
+
+    with SessionLocal() as session:
+
+        mission = Mission(
+            title=title,
+            description=description,
+            points=points,
+        )
+
+        session.add(mission)
+
+        session.commit()
+
+        return mission.id
+
+
+def get_missions():
+
+    with SessionLocal() as session:
+
+        missions = (
+            session.query(Mission)
+            .order_by(Mission.id)
+            .all()
+        )
+
+        return [
+            {
+                "id": mission.id,
+                "title": mission.title,
+                "description": mission.description,
+                "points": mission.points,
+            }
+            for mission in missions
+        ]
+
+
+def get_mission(
+    mission_id,
+):
+
+    with SessionLocal() as session:
+
+        mission = (
+            session.query(Mission)
+            .filter(
+                Mission.id == mission_id
+            )
+            .first()
+        )
+
+        if not mission:
+            return None
+
+        return {
+            "id": mission.id,
+            "title": mission.title,
+            "description": mission.description,
+            "points": mission.points,
+        }
+
+
+# ============================================================
+# ПРОВЕРКА:
+# ВЫДАВАЛОСЬ ЛИ ЗАДАНИЕ КОМАНДЕ
+# ============================================================
+
+def mission_was_issued(
+    mission_id,
+    team_id,
+):
+
+    with SessionLocal() as session:
+
+        exists = (
+            session.query(
+                IssuedMission
+            )
+            .filter(
+                IssuedMission.mission_id
+                == mission_id,
+                IssuedMission.team_id
+                == team_id,
+            )
+            .first()
+        )
+
+        return exists is not None
+
+
+# ============================================================
+# ВЫДАТЬ МИССИЮ
+# ============================================================
+
+def issue_mission(
+    mission_id,
+    team_id,
+    user_id=None,
+):
+
+    with SessionLocal() as session:
+
+        # Дополнительная защита от повторной выдачи.
+
+        existing = (
+            session.query(
+                IssuedMission
+            )
+            .filter(
+                IssuedMission.mission_id
+                == mission_id,
+                IssuedMission.team_id
+                == team_id,
+            )
+            .first()
+        )
+
+        if existing:
+            return None
+
+        issued = IssuedMission(
+            mission_id=mission_id,
+            team_id=team_id,
+            issued_to_user_id=user_id,
+            status="active",
+        )
+
+        session.add(issued)
+
+        session.commit()
+
+        return issued.id
+
+
+# ============================================================
+# ДОСТУПНЫЕ МИССИИ ДЛЯ КОМАНДЫ
+# ============================================================
+
+def get_available_missions(
+    team_id,
+):
+
+    with SessionLocal() as session:
+
+        issued_ids = (
+            session.query(
+                IssuedMission.mission_id
+            )
+            .filter(
+                IssuedMission.team_id
+                == team_id
+            )
+            .all()
+        )
+
+        issued_ids = {
+            item[0]
+            for item in issued_ids
+        }
+
+        query = (
+            session.query(Mission)
+            .order_by(Mission.id)
+        )
+
+        if issued_ids:
+
+            query = query.filter(
+                ~Mission.id.in_(
+                    issued_ids
+                )
+            )
+
+        missions = query.all()
+
+        return [
+            {
+                "id": mission.id,
+                "title": mission.title,
+                "description": mission.description,
+                "points": mission.points,
+            }
+            for mission in missions
+        ]
+
+
+# ============================================================
+# АКТИВНЫЕ МИССИИ КОМАНДЫ
+# ============================================================
+
+def get_active_mission_for_team(
+    team_id,
+):
+
+    with SessionLocal() as session:
+
+        issued = (
+            session.query(
+                IssuedMission
+            )
+            .filter(
+                IssuedMission.team_id
+                == team_id,
+                IssuedMission.status
+                == "active",
+            )
+            .order_by(
+                IssuedMission.id.desc()
+            )
+            .first()
+        )
+
+        if not issued:
+            return None
+
+        mission = (
+            session.query(Mission)
+            .filter(
+                Mission.id
+                == issued.mission_id
+            )
+            .first()
+        )
+
+        if not mission:
+            return None
+
+        return {
+            "issued_id": issued.id,
+            "mission_id": mission.id,
+            "team_id": issued.team_id,
+            "title": mission.title,
+            "description": mission.description,
+            "points": mission.points,
+            "issued_at": issued.issued_at.strftime(
+                "%d.%m %H:%M"
+            ),
+            "status": issued.status,
+        }
+
+
+# ============================================================
+# ВСЕ ВЫДАННЫЕ МИССИИ
+# ============================================================
+
+def get_issued_missions(
+    limit=50,
+):
+
+    with SessionLocal() as session:
+
+        rows = (
+            session.query(
+                IssuedMission
+            )
+            .order_by(
+                IssuedMission.id.desc()
+            )
+            .limit(limit)
+            .all()
+        )
+
+        result = []
+
+        for row in rows:
+
+            mission = (
+                session.query(Mission)
+                .filter(
+                    Mission.id
+                    == row.mission_id
+                )
+                .first()
+            )
+
+            team = (
+                session.query(Team)
+                .filter(
+                    Team.id
+                    == row.team_id
+                )
+                .first()
+            )
+
+            result.append(
+                {
+                    "id": row.id,
+                    "mission_id": row.mission_id,
+                    "mission_title": (
+                        mission.title
+                        if mission
+                        else "Удалённая миссия"
+                    ),
+                    "team_id": row.team_id,
+                    "team_name": (
+                        team.name
+                        if team
+                        else "Неизвестная команда"
+                    ),
+                    "user_id": row.issued_to_user_id,
+                    "status": row.status,
+                    "issued_at": row.issued_at.strftime(
+                        "%d.%m %H:%M"
+                    ),
+                }
+            )
+
+        return result
+```
