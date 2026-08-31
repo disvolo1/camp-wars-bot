@@ -6,6 +6,7 @@ from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
 from aiogram.types import Message, CallbackQuery
 from aiogram.utils.keyboard import InlineKeyboardBuilder
+from aiogram.exceptions import TelegramBadRequest
 
 from database import (
     init_database,
@@ -28,49 +29,27 @@ if not BOT_TOKEN:
 
 
 # ============================================================
-# BOT
+# ЛОГИ
 # ============================================================
 
 logging.basicConfig(
     level=logging.INFO
 )
 
+
+# ============================================================
+# BOT
+# ============================================================
+
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
 
 # ============================================================
-# СОСТОЯНИЕ ПОЛЬЗОВАТЕЛЕЙ
+# ВРЕМЕННОЕ СОСТОЯНИЕ ПОЛЬЗОВАТЕЛЕЙ
 # ============================================================
 
 user_state = {}
-
-
-# ============================================================
-# АКТИВНОСТИ
-# ============================================================
-
-# Обычная активность:
-# победа = 100
-
-REGULAR_ACTIVITIES = [
-    ("football", "⚽ Футбол"),
-    ("volleyball", "🏐 Волейбол"),
-    ("pingpong", "🏓 Пинг-понг"),
-    ("streetball", "🏀 Стритбол"),
-    ("badminton", "🏸 Бадминтон"),
-    ("tablegames", "🎲 Настолки"),
-]
-
-
-# Большой турнир:
-# 1 место = 500
-# 2 место = 300
-# 3 место = 150
-
-BIG_TOURNAMENTS = [
-    ("pingpong", "🏓 Пинг-понг"),
-]
 
 
 # ============================================================
@@ -84,6 +63,50 @@ BIG_TOURNAMENT_POINTS = {
     "2": 300,
     "3": 150,
 }
+
+
+# ============================================================
+# ОБЫЧНЫЕ АКТИВНОСТИ
+# ============================================================
+
+REGULAR_ACTIVITIES = [
+    ("football", "⚽ Футбол"),
+    ("volleyball", "🏐 Волейбол"),
+    ("pingpong", "🏓 Пинг-понг"),
+    ("streetball", "🏀 Стритбол"),
+    ("badminton", "🏸 Бадминтон"),
+    ("tablegames", "🎲 Настолки"),
+]
+
+
+# ============================================================
+# БОЛЬШИЕ ТУРНИРЫ
+# ============================================================
+
+BIG_TOURNAMENTS = [
+    ("pingpong", "🏓 Пинг-понг"),
+]
+
+
+# ============================================================
+# БЕЗОПАСНОЕ РЕДАКТИРОВАНИЕ СООБЩЕНИЯ
+# ============================================================
+
+async def safe_edit(
+    message,
+    text,
+    reply_markup=None,
+):
+    try:
+        await message.edit_text(
+            text,
+            reply_markup=reply_markup,
+        )
+
+    except TelegramBadRequest as error:
+
+        if "message is not modified" not in str(error):
+            raise
 
 
 # ============================================================
@@ -105,7 +128,7 @@ def main_keyboard():
     )
 
     builder.button(
-        text="➕ Вручную",
+        text="➕ Добавить баллы",
         callback_data="manual_points",
     )
 
@@ -125,23 +148,25 @@ def main_keyboard():
 
 
 # ============================================================
-# НАЗАД
+# КНОПКА НАЗАД
 # ============================================================
 
-def back_keyboard():
+def back_keyboard(
+    callback_data="main_menu"
+):
 
     builder = InlineKeyboardBuilder()
 
     builder.button(
         text="◀️ Назад",
-        callback_data="main_menu",
+        callback_data=callback_data,
     )
 
     return builder.as_markup()
 
 
 # ============================================================
-# КОМАНДЫ
+# КЛАВИАТУРА КОМАНД
 # ============================================================
 
 def teams_keyboard(prefix):
@@ -179,11 +204,11 @@ def activities_keyboard():
 
         builder.button(
             text=name,
-            callback_data=f"activity:{key}",
+            callback_data=f"regular_activity:{key}",
         )
 
     builder.button(
-        text="🏆 Большой турнир",
+        text="🏆 Большие турниры",
         callback_data="big_tournament",
     )
 
@@ -198,54 +223,31 @@ def activities_keyboard():
 
 
 # ============================================================
-# РЕЗУЛЬТАТЫ ОБЫЧНОЙ АКТИВНОСТИ
+# МЕСТА В БОЛЬШОМ ТУРНИРЕ
 # ============================================================
 
-def regular_result_keyboard():
+def tournament_places_keyboard():
 
     builder = InlineKeyboardBuilder()
 
     builder.button(
-        text=f"🥇 Победа +{REGULAR_WIN_POINTS}",
-        callback_data="regular_result:win",
+        text="🥇 1 место — +500",
+        callback_data="tournament_place:1",
+    )
+
+    builder.button(
+        text="🥈 2 место — +300",
+        callback_data="tournament_place:2",
+    )
+
+    builder.button(
+        text="🥉 3 место — +150",
+        callback_data="tournament_place:3",
     )
 
     builder.button(
         text="◀️ Назад",
-        callback_data="activity",
-    )
-
-    builder.adjust(1)
-
-    return builder.as_markup()
-
-
-# ============================================================
-# МЕСТА БОЛЬШОГО ТУРНИРА
-# ============================================================
-
-def tournament_result_keyboard():
-
-    builder = InlineKeyboardBuilder()
-
-    builder.button(
-        text="🥇 1 место +500",
-        callback_data="tournament_result:1",
-    )
-
-    builder.button(
-        text="🥈 2 место +300",
-        callback_data="tournament_result:2",
-    )
-
-    builder.button(
-        text="🥉 3 место +150",
-        callback_data="tournament_result:3",
-    )
-
-    builder.button(
-        text="◀️ Назад",
-        callback_data="activity",
+        callback_data="big_tournament",
     )
 
     builder.adjust(1)
@@ -257,7 +259,7 @@ def tournament_result_keyboard():
 # ПОДТВЕРЖДЕНИЕ
 # ============================================================
 
-def confirmation_keyboard():
+def confirm_keyboard():
 
     builder = InlineKeyboardBuilder()
 
@@ -281,7 +283,9 @@ def confirmation_keyboard():
 # ============================================================
 
 @dp.message(Command("start"))
-async def start(message: Message):
+async def start(
+    message: Message,
+):
 
     user_state.pop(
         message.from_user.id,
@@ -311,23 +315,79 @@ async def main_menu(
         None,
     )
 
-    await callback.message.edit_text(
+    await safe_edit(
+        callback.message,
         "🔥 CAMP WARS\n\n"
         "Панель управления:",
-        reply_markup=main_keyboard(),
+        main_keyboard(),
     )
 
     await callback.answer()
 
 
 # ============================================================
-# АКТИВНОСТЬ
+# ТАБЛО
+# ============================================================
+
+@dp.callback_query(
+    F.data == "scoreboard"
+)
+async def scoreboard(
+    callback: CallbackQuery,
+):
+
+    teams = get_teams()
+
+    teams = sorted(
+        teams,
+        key=lambda team: team["score"],
+        reverse=True,
+    )
+
+    medals = {
+        1: "🥇",
+        2: "🥈",
+        3: "🥉",
+    }
+
+    lines = [
+        "🔥 CAMP WARS",
+        "",
+        "🏆 ОБЩИЙ РЕЙТИНГ",
+        "",
+    ]
+
+    for position, team in enumerate(
+        teams,
+        start=1,
+    ):
+
+        prefix = medals.get(
+            position,
+            f"{position}.",
+        )
+
+        lines.append(
+            f"{prefix} {team['name']} — {team['score']}"
+        )
+
+    await safe_edit(
+        callback.message,
+        "\n".join(lines),
+        main_keyboard(),
+    )
+
+    await callback.answer()
+
+
+# ============================================================
+# ЗА АКТИВНОСТЬ
 # ============================================================
 
 @dp.callback_query(
     F.data == "activity"
 )
-async def activity_menu(
+async def activity(
     callback: CallbackQuery,
 ):
 
@@ -336,10 +396,11 @@ async def activity_menu(
         None,
     )
 
-    await callback.message.edit_text(
-        "🏅 НАЧИСЛИТЬ ЗА АКТИВНОСТЬ\n\n"
+    await safe_edit(
+        callback.message,
+        "🏅 ЗА АКТИВНОСТЬ\n\n"
         "Выберите мероприятие:",
-        reply_markup=activities_keyboard(),
+        activities_keyboard(),
     )
 
     await callback.answer()
@@ -350,25 +411,23 @@ async def activity_menu(
 # ============================================================
 
 @dp.callback_query(
-    F.data.startswith("activity:")
+    F.data.startswith("regular_activity:")
 )
-async def select_activity(
+async def regular_activity(
     callback: CallbackQuery,
 ):
 
     activity_key = callback.data.split(":")[1]
 
-    activity_name = next(
-        (
-            name
-            for key, name
-            in REGULAR_ACTIVITIES
-            if key == activity_key
-        ),
-        None,
-    )
+    activity_name = None
 
-    if not activity_name:
+    for key, name in REGULAR_ACTIVITIES:
+
+        if key == activity_key:
+            activity_name = name
+            break
+
+    if activity_name is None:
 
         await callback.answer(
             "Активность не найдена",
@@ -380,30 +439,30 @@ async def select_activity(
     user_state[
         callback.from_user.id
     ] = {
-        "action": "activity",
+        "action": "regular_activity",
         "activity": activity_name,
         "points": REGULAR_WIN_POINTS,
+        "result": "🥇 Победа",
     }
 
-    await callback.message.edit_text(
+    await safe_edit(
+        callback.message,
         f"🏅 {activity_name}\n\n"
-        "Выберите команду:",
-        reply_markup=teams_keyboard(
-            "activity_team"
-        ),
+        "Выберите команду-победителя:",
+        teams_keyboard("regular_team"),
     )
 
     await callback.answer()
 
 
 # ============================================================
-# ВЫБОР КОМАНДЫ ОБЫЧНОЙ АКТИВНОСТИ
+# ВЫБОР КОМАНДЫ В ОБЫЧНОЙ АКТИВНОСТИ
 # ============================================================
 
 @dp.callback_query(
-    F.data.startswith("activity_team:")
+    F.data.startswith("regular_team:")
 )
-async def select_activity_team(
+async def regular_team(
     callback: CallbackQuery,
 ):
 
@@ -413,45 +472,37 @@ async def select_activity_team(
 
     team = get_team(team_id)
 
-    if not team:
-
-        await callback.answer(
-            "Команда не найдена",
-            show_alert=True,
-        )
-
-        return
-
     state = user_state.get(
         callback.from_user.id
     )
 
-    if not state:
+    if not team or not state:
 
         await callback.answer(
-            "Начните заново",
+            "Начните операцию заново",
             show_alert=True,
         )
 
         return
 
     state["team_id"] = team_id
-    state["result"] = "🥇 Победа"
 
-    await callback.message.edit_text(
+    await safe_edit(
+        callback.message,
         "⚠️ ПРОВЕРЬТЕ НАЧИСЛЕНИЕ\n\n"
         f"👥 Команда: {team['name']}\n"
         f"🏅 Активность: {state['activity']}\n"
-        f"🥇 Результат: Победа\n"
-        f"💰 Баллы: +{state['points']}",
-        reply_markup=confirmation_keyboard(),
+        f"🏆 Результат: Победа\n"
+        f"➕ Баллы: {state['points']}\n\n"
+        "Всё верно?",
+        confirm_keyboard(),
     )
 
     await callback.answer()
 
 
 # ============================================================
-# БОЛЬШОЙ ТУРНИР
+# БОЛЬШИЕ ТУРНИРЫ
 # ============================================================
 
 @dp.callback_query(
@@ -460,12 +511,6 @@ async def select_activity_team(
 async def big_tournament(
     callback: CallbackQuery,
 ):
-
-    await callback.message.edit_text(
-        "🏆 БОЛЬШОЙ ТУРНИР\n\n"
-        "Выберите дисциплину:",
-        reply_markup=InlineKeyboardBuilder().as_markup(),
-    )
 
     builder = InlineKeyboardBuilder()
 
@@ -483,37 +528,38 @@ async def big_tournament(
 
     builder.adjust(1)
 
-    await callback.message.edit_reply_markup(
-        reply_markup=builder.as_markup()
+    await safe_edit(
+        callback.message,
+        "🏆 БОЛЬШИЕ ТУРНИРЫ\n\n"
+        "Выберите турнир:",
+        builder.as_markup(),
     )
 
     await callback.answer()
 
 
 # ============================================================
-# ВЫБОР ДИСЦИПЛИНЫ БОЛЬШОГО ТУРНИРА
+# ВЫБОР БОЛЬШОГО ТУРНИРА
 # ============================================================
 
 @dp.callback_query(
     F.data.startswith("big_activity:")
 )
-async def select_big_activity(
+async def big_activity(
     callback: CallbackQuery,
 ):
 
-    activity_key = callback.data.split(":")[1]
+    tournament_key = callback.data.split(":")[1]
 
-    activity_name = next(
-        (
-            name
-            for key, name
-            in BIG_TOURNAMENTS
-            if key == activity_key
-        ),
-        None,
-    )
+    tournament_name = None
 
-    if not activity_name:
+    for key, name in BIG_TOURNAMENTS:
+
+        if key == tournament_key:
+            tournament_name = name
+            break
+
+    if tournament_name is None:
 
         await callback.answer(
             "Турнир не найден",
@@ -525,29 +571,175 @@ async def select_big_activity(
     user_state[
         callback.from_user.id
     ] = {
-        "action": "big_activity",
-        "activity": f"🏆 {activity_name}",
+        "action": "big_tournament",
+        "activity": f"🏆 {tournament_name}",
     }
 
-    await callback.message.edit_text(
-        f"🏆 {activity_name}\n\n"
+    await safe_edit(
+        callback.message,
+        f"🏆 {tournament_name}\n\n"
         "Выберите команду:",
-        reply_markup=teams_keyboard(
-            "big_team"
-        ),
+        teams_keyboard("big_team"),
     )
 
     await callback.answer()
 
 
 # ============================================================
-# ВЫБОР КОМАНДЫ БОЛЬШОГО ТУРНИРА
+# ВЫБОР КОМАНДЫ В БОЛЬШОМ ТУРНИРЕ
 # ============================================================
 
 @dp.callback_query(
     F.data.startswith("big_team:")
 )
-async def select_big_team(
+async def big_team(
+    callback: CallbackQuery,
+):
+
+    team_id = int(
+        callback.data.split(":")[1]
+    )
+
+    team = get_team(team_id)
+
+    state = user_state.get(
+        callback.from_user.id
+    )
+
+    if not team or not state:
+
+        await callback.answer(
+            "Начните операцию заново",
+            show_alert=True,
+        )
+
+        return
+
+    state["team_id"] = team_id
+
+    await safe_edit(
+        callback.message,
+        f"{state['activity']}\n\n"
+        f"👥 {team['name']}\n\n"
+        "Выберите занятое место:",
+        tournament_places_keyboard(),
+    )
+
+    await callback.answer()
+
+
+# ============================================================
+# МЕСТО В БОЛЬШОМ ТУРНИРЕ
+# ============================================================
+
+@dp.callback_query(
+    F.data.startswith("tournament_place:")
+)
+async def tournament_place(
+    callback: CallbackQuery,
+):
+
+    place = callback.data.split(":")[1]
+
+    state = user_state.get(
+        callback.from_user.id
+    )
+
+    if not state:
+
+        await callback.answer(
+            "Начните операцию заново",
+            show_alert=True,
+        )
+
+        return
+
+    points = BIG_TOURNAMENT_POINTS.get(
+        place
+    )
+
+    if points is None:
+
+        await callback.answer(
+            "Ошибка баллов",
+            show_alert=True,
+        )
+
+        return
+
+    team = get_team(
+        state["team_id"]
+    )
+
+    if not team:
+
+        await callback.answer(
+            "Команда не найдена",
+            show_alert=True,
+        )
+
+        return
+
+    medals = {
+        "1": "🥇",
+        "2": "🥈",
+        "3": "🥉",
+    }
+
+    state["points"] = points
+    state["result"] = (
+        f"{medals[place]} {place} место"
+    )
+
+    await safe_edit(
+        callback.message,
+        "⚠️ ПРОВЕРЬТЕ НАЧИСЛЕНИЕ\n\n"
+        f"👥 Команда: {team['name']}\n"
+        f"🏆 Турнир: {state['activity']}\n"
+        f"🏅 Результат: {place} место\n"
+        f"➕ Баллы: {points}\n\n"
+        "Всё верно?",
+        confirm_keyboard(),
+    )
+
+    await callback.answer()
+
+
+# ============================================================
+# РУЧНОЕ НАЧИСЛЕНИЕ
+# ============================================================
+
+@dp.callback_query(
+    F.data == "manual_points"
+)
+async def manual_points(
+    callback: CallbackQuery,
+):
+
+    user_state[
+        callback.from_user.id
+    ] = {
+        "action": "manual",
+    }
+
+    await safe_edit(
+        callback.message,
+        "➕ ДОБАВИТЬ БАЛЛЫ\n\n"
+        "Выберите команду:",
+        teams_keyboard("manual_team"),
+    )
+
+    await callback.answer()
+
+
+# ============================================================
+# КОМАНДА ДЛЯ РУЧНОГО НАЧИСЛЕНИЯ
+# ============================================================
+
+@dp.callback_query(
+    F.data.startswith("manual_team:")
+)
+async def manual_team(
     callback: CallbackQuery,
 ):
 
@@ -566,86 +758,28 @@ async def select_big_team(
 
         return
 
-    state = user_state.get(
+    user_state[
         callback.from_user.id
-    )
-
-    if not state:
-
-        await callback.answer(
-            "Начните заново",
-            show_alert=True,
-        )
-
-        return
-
-    state["team_id"] = team_id
-
-    await callback.message.edit_text(
-        f"{state['activity']}\n\n"
-        f"👥 {team['name']}\n\n"
-        "Какое место заняла команда?",
-        reply_markup=tournament_result_keyboard(),
-    )
-
-    await callback.answer()
-
-
-# ============================================================
-# ВЫБОР МЕСТА БОЛЬШОГО ТУРНИРА
-# ============================================================
-
-@dp.callback_query(
-    F.data.startswith("tournament_result:")
-)
-async def tournament_result(
-    callback: CallbackQuery,
-):
-
-    place = callback.data.split(":")[1]
-
-    state = user_state.get(
-        callback.from_user.id
-    )
-
-    if not state:
-
-        await callback.answer(
-            "Начните заново",
-            show_alert=True,
-        )
-
-        return
-
-    points = BIG_TOURNAMENT_POINTS[place]
-
-    state["points"] = points
-    state["result"] = f"{place} место"
-
-    team = get_team(
-        state["team_id"]
-    )
-
-    medals = {
-        "1": "🥇",
-        "2": "🥈",
-        "3": "🥉",
+    ] = {
+        "action": "manual",
+        "team_id": team_id,
     }
 
-    await callback.message.edit_text(
-        "⚠️ ПРОВЕРЬТЕ НАЧИСЛЕНИЕ\n\n"
-        f"👥 Команда: {team['name']}\n"
-        f"🏆 Турнир: {state['activity']}\n"
-        f"{medals[place]} Результат: {place} место\n"
-        f"💰 Баллы: +{points}",
-        reply_markup=confirmation_keyboard(),
+    await safe_edit(
+        callback.message,
+        "➕ ДОБАВИТЬ БАЛЛЫ\n\n"
+        f"👥 {team['name']}\n"
+        f"🏆 Текущий счёт: {team['score']}\n\n"
+        "Введите количество баллов числом.\n\n"
+        "Например: 250",
+        back_keyboard(),
     )
 
     await callback.answer()
 
 
 # ============================================================
-# ПОДТВЕРЖДЕНИЕ НАЧИСЛЕНИЯ
+# ПОДТВЕРЖДЕНИЕ
 # ============================================================
 
 @dp.callback_query(
@@ -668,8 +802,28 @@ async def confirm_points(
 
         return
 
-    team_id = state["team_id"]
-    points = state["points"]
+    team_id = state.get("team_id")
+    points = state.get("points")
+
+    if not team_id or points is None:
+
+        await callback.answer(
+            "Недостаточно данных",
+            show_alert=True,
+        )
+
+        return
+
+    team_before = get_team(team_id)
+
+    if not team_before:
+
+        await callback.answer(
+            "Команда не найдена",
+            show_alert=True,
+        )
+
+        return
 
     username = callback.from_user.username
     first_name = callback.from_user.first_name
@@ -684,21 +838,32 @@ async def confirm_points(
         result=state.get("result"),
     )
 
-    team = get_team(team_id)
+    team_after = get_team(team_id)
+
+    activity_name = (
+        state.get("activity")
+        or "—"
+    )
+
+    result = (
+        state.get("result")
+        or "—"
+    )
 
     user_state.pop(
         callback.from_user.id,
         None,
     )
 
-    await callback.message.edit_text(
+    await safe_edit(
+        callback.message,
         "✅ БАЛЛЫ НАЧИСЛЕНЫ!\n\n"
-        f"👥 {team['name']}\n"
-        f"🏅 {state.get('activity')}\n"
-        f"🏆 {state.get('result')}\n"
+        f"👥 {team_after['name']}\n"
+        f"🏅 {activity_name}\n"
+        f"🏆 {result}\n"
         f"➕ +{points}\n"
         f"💰 Новый счёт: {new_score}",
-        reply_markup=main_keyboard(),
+        main_keyboard(),
     )
 
     await callback.answer(
@@ -722,88 +887,102 @@ async def cancel_points(
         None,
     )
 
-    await callback.message.edit_text(
+    await safe_edit(
+        callback.message,
         "❌ Начисление отменено.",
-        reply_markup=main_keyboard(),
+        main_keyboard(),
     )
 
     await callback.answer()
 
 
 # ============================================================
-# РУЧНОЕ НАЧИСЛЕНИЕ
+# ИСТОРИЯ
 # ============================================================
 
 @dp.callback_query(
-    F.data == "manual_points"
+    F.data == "history"
 )
-async def manual_points(
+async def history(
     callback: CallbackQuery,
 ):
 
-    user_state[
-        callback.from_user.id
-    ] = {
-        "action": "manual_points"
-    }
-
-    await callback.message.edit_text(
-        "➕ ДОБАВИТЬ БАЛЛЫ ВРУЧНУЮ\n\n"
-        "Выберите команду:",
-        reply_markup=teams_keyboard(
-            "manual_team"
-        ),
+    history_items = get_history(
+        limit=30
     )
 
-    await callback.answer()
+    if not history_items:
 
-
-# ============================================================
-# ВЫБОР КОМАНДЫ ДЛЯ РУЧНОГО НАЧИСЛЕНИЯ
-# ============================================================
-
-@dp.callback_query(
-    F.data.startswith("manual_team:")
-)
-async def select_manual_team(
-    callback: CallbackQuery,
-):
-
-    team_id = int(
-        callback.data.split(":")[1]
-    )
-
-    team = get_team(team_id)
-
-    if not team:
-
-        await callback.answer(
-            "Команда не найдена",
-            show_alert=True,
+        await safe_edit(
+            callback.message,
+            "📜 ИСТОРИЯ\n\n"
+            "Изменений пока нет.",
+            back_keyboard(),
         )
+
+        await callback.answer()
 
         return
 
-    user_state[
-        callback.from_user.id
-    ] = {
-        "action": "manual_points",
-        "team_id": team_id,
-    }
+    lines = [
+        "📜 ИСТОРИЯ ИЗМЕНЕНИЙ",
+        "",
+    ]
 
-    await callback.message.edit_text(
-        "➕ ВРУЧНУЮ\n\n"
-        f"👥 {team['name']}\n"
-        f"🏆 Сейчас: {team['score']}\n\n"
-        "Введите количество баллов:",
-        reply_markup=back_keyboard(),
+    for item in history_items:
+
+        username = item["username"]
+
+        if username:
+            author = f"@{username}"
+        elif item["first_name"]:
+            author = item["first_name"]
+        else:
+            author = f"ID {item['user_id']}"
+
+        points = item["points"]
+
+        if points > 0:
+            points_text = f"+{points}"
+        else:
+            points_text = str(points)
+
+        activity_name = (
+            item["activity"]
+            or "—"
+        )
+
+        result = (
+            item["result"]
+            or "—"
+        )
+
+        lines.append(
+            f"👥 {item['team_name']}\n"
+            f"🏅 {activity_name}\n"
+            f"🏆 {result}\n"
+            f"💰 {points_text} → {item['new_score']}\n"
+            f"👤 {author}\n"
+            f"🕐 {item['created_at']}\n"
+        )
+
+    text = "\n".join(lines)
+
+    # Telegram имеет ограничение длины сообщения.
+    if len(text) > 3900:
+        text = text[:3900] + "\n\n..."
+
+    await safe_edit(
+        callback.message,
+        text,
+        back_keyboard(),
     )
 
     await callback.answer()
 
 
 # ============================================================
-# НАЗВАНИЯ КОМАНД
+# ПЕРЕИМЕНОВАНИЕ КОМАНД
 # ============================================================
 
 @dp.callback_query(
@@ -813,12 +992,11 @@ async def rename_menu(
     callback: CallbackQuery,
 ):
 
-    await callback.message.edit_text(
+    await safe_edit(
+        callback.message,
         "✏️ НАЗВАНИЯ КОМАНД\n\n"
         "Выберите команду:",
-        reply_markup=teams_keyboard(
-            "rename_team"
-        ),
+        teams_keyboard("rename_team"),
     )
 
     await callback.answer()
@@ -831,7 +1009,7 @@ async def rename_menu(
 @dp.callback_query(
     F.data.startswith("rename_team:")
 )
-async def select_rename_team(
+async def rename_team_select(
     callback: CallbackQuery,
 ):
 
@@ -853,23 +1031,24 @@ async def select_rename_team(
     user_state[
         callback.from_user.id
     ] = {
-        "action": "rename_team",
+        "action": "rename",
         "team_id": team_id,
     }
 
-    await callback.message.edit_text(
+    await safe_edit(
+        callback.message,
         "✏️ ПЕРЕИМЕНОВАНИЕ\n\n"
-        f"Сейчас:\n"
+        f"Текущее название:\n"
         f"{team['name']}\n\n"
-        "Введите новое название:",
-        reply_markup=back_keyboard(),
+        "Введите новое название команды:",
+        back_keyboard(),
     )
 
     await callback.answer()
 
 
 # ============================================================
-# ТЕКСТОВЫЙ ВВОД
+# ТЕКСТОВЫЕ СООБЩЕНИЯ
 # ============================================================
 
 @dp.message(F.text)
@@ -887,17 +1066,17 @@ async def text_handler(
     text = message.text.strip()
 
     # ========================================================
-    # РУЧНЫЕ БАЛЛЫ
+    # РУЧНОЕ КОЛИЧЕСТВО БАЛЛОВ
     # ========================================================
 
-    if state.get("action") == "manual_points":
+    if state.get("action") == "manual":
 
         try:
             points = int(text)
         except ValueError:
 
             await message.answer(
-                "❌ Введите только число.\n\n"
+                "❌ Нужно ввести число.\n\n"
                 "Например: 250"
             )
 
@@ -906,14 +1085,16 @@ async def text_handler(
         if points <= 0:
 
             await message.answer(
-                "❌ Баллы должны быть больше 0."
+                "❌ Количество баллов должно быть больше 0."
             )
 
             return
 
         team_id = state.get("team_id")
 
-        if not team_id:
+        team = get_team(team_id)
+
+        if not team:
 
             user_state.pop(
                 user_id,
@@ -921,12 +1102,11 @@ async def text_handler(
             )
 
             await message.answer(
-                "❌ Команда не выбрана."
+                "❌ Команда не найдена.",
+                reply_markup=main_keyboard(),
             )
 
             return
-
-        team = get_team(team_id)
 
         state["points"] = points
         state["activity"] = "✏️ Ручное начисление"
@@ -935,9 +1115,9 @@ async def text_handler(
         await message.answer(
             "⚠️ ПРОВЕРЬТЕ НАЧИСЛЕНИЕ\n\n"
             f"👥 Команда: {team['name']}\n"
-            f"💰 Баллы: +{points}\n\n"
-            "Подтвердить?",
-            reply_markup=confirmation_keyboard(),
+            f"➕ Баллы: +{points}\n\n"
+            "Всё верно?",
+            reply_markup=confirm_keyboard(),
         )
 
         return
@@ -946,12 +1126,21 @@ async def text_handler(
     # ПЕРЕИМЕНОВАНИЕ
     # ========================================================
 
-    if state.get("action") == "rename_team":
+    if state.get("action") == "rename":
 
         if len(text) > 40:
 
             await message.answer(
-                "❌ Максимум 40 символов."
+                "❌ Название слишком длинное.\n"
+                "Максимум 40 символов."
+            )
+
+            return
+
+        if len(text) < 1:
+
+            await message.answer(
+                "❌ Название не может быть пустым."
             )
 
             return
@@ -976,141 +1165,6 @@ async def text_handler(
         )
 
         return
-
-
-# ============================================================
-# ТАБЛО
-# ============================================================
-
-@dp.callback_query(
-    F.data == "scoreboard"
-)
-async def scoreboard(
-    callback: CallbackQuery,
-):
-
-    teams = get_teams()
-
-    sorted_teams = sorted(
-        teams,
-        key=lambda team: team["score"],
-        reverse=True,
-    )
-
-    lines = [
-        "🔥 CAMP WARS",
-        "",
-        "🏆 ОБЩИЙ РЕЙТИНГ",
-        "",
-    ]
-
-    medals = {
-        1: "🥇",
-        2: "🥈",
-        3: "🥉",
-    }
-
-    for position, team in enumerate(
-        sorted_teams,
-        start=1,
-    ):
-
-        prefix = medals.get(
-            position,
-            f"{position}.",
-        )
-
-        lines.append(
-            f"{prefix} {team['name']} — {team['score']}"
-        )
-
-    await callback.message.edit_text(
-        "\n".join(lines),
-        reply_markup=main_keyboard(),
-    )
-
-    await callback.answer()
-
-
-# ============================================================
-# ИСТОРИЯ
-# ============================================================
-
-@dp.callback_query(
-    F.data == "history"
-)
-async def history(
-    callback: CallbackQuery,
-):
-
-    history_items = get_history(
-        limit=30
-    )
-
-    if not history_items:
-
-        await callback.message.edit_text(
-            "📜 ИСТОРИЯ\n\n"
-            "Пока изменений нет.",
-            reply_markup=back_keyboard(),
-        )
-
-        await callback.answer()
-
-        return
-
-    lines = [
-        "📜 ИСТОРИЯ ИЗМЕНЕНИЙ",
-        "",
-    ]
-
-    for item in history_items:
-
-        if item["username"]:
-            author = f"@{item['username']}"
-        elif item["first_name"]:
-            author = item["first_name"]
-        else:
-            author = f"ID {item['user_id']}"
-
-        points_text = (
-            f"+{item['points']}"
-            if item["points"] > 0
-            else str(item["points"])
-        )
-
-        created_at = str(
-            item["created_at"]
-        )
-
-        if len(created_at) >= 16:
-            created_at = created_at[:16]
-
-        activity = (
-            item["activity"]
-            or "—"
-        )
-
-        result = (
-            item["result"]
-            or "—"
-        )
-
-        lines.append(
-            f"🕐 {created_at}\n"
-            f"👥 {item['team_name']}\n"
-            f"🏅 {activity}\n"
-            f"🏆 {result}\n"
-            f"💰 {points_text} → {item['new_score']}\n"
-            f"👤 {author}\n"
-        )
-
-    await callback.message.edit_text(
-        "\n".join(lines),
-        reply_markup=back_keyboard(),
-    )
-
-    await callback.answer()
 
 
 # ============================================================
