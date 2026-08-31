@@ -3,21 +3,3 @@ services:
     name: camp-wars-bot
     runtime: docker
     dockerfilePath: ./Dockerfile
-
-    envVars:
-      - key: BOT_TOKEN
-        sync: false
-
-      - key: ADMIN_IDS
-        sync: false
-
-      - key: DATABASE_URL
-        fromDatabase:
-          name: camp-wars-db
-          property: connectionString
-
-
-databases:
-  - name: camp-wars-db
-    databaseName: camp_wars
-    user: camp_wars
