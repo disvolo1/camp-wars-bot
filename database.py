@@ -17,22 +17,21 @@ from sqlalchemy.orm import declarative_base, sessionmaker
 # DATABASE
 # ============================================================
 
-DATABASE_URL = os.getenv("DATABASE_URL")
+# Если DATABASE_URL задан — используем его.
+# Если не задан — используем локальную SQLite-базу.
+DATABASE_URL = os.getenv(
+    "DATABASE_URL",
+    "sqlite:///./database.db",
+)
 
-if not DATABASE_URL:
-    raise RuntimeError("Не задан DATABASE_URL")
-
-# Render/PostgreSQL иногда отдаёт postgres://
-# SQLAlchemy использует postgresql://
-if DATABASE_URL.startswith("postgres://"):
-    DATABASE_URL = DATABASE_URL.replace(
-        "postgres://",
-        "postgresql://",
-        1,
-    )
+# SQLite не требует отдельного сервера базы данных.
+# Файл database.db будет создан автоматически.
 
 engine = create_engine(
     DATABASE_URL,
+    connect_args={
+        "check_same_thread": False
+    } if DATABASE_URL.startswith("sqlite") else {},
     pool_pre_ping=True,
 )
 
