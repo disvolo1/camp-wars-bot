@@ -12,6 +12,9 @@ from aiogram.types import (
     InlineKeyboardButton,
 )
 from aiogram.exceptions import TelegramBadRequest
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.fsm.storage.memory import MemoryStorage
 
 from database import (
     init_database,
@@ -23,8 +26,6 @@ from database import (
     save_user,
     get_user,
     set_user_team,
-    create_mission,
-    get_missions,
     get_available_missions,
     issue_mission,
     get_active_mission_for_team,
@@ -41,6 +42,7 @@ if not BOT_TOKEN:
     raise RuntimeError("Не задан BOT_TOKEN")
 
 
+# Telegram ID администраторов
 ADMIN_IDS = {
     128835770,
     994383,
@@ -62,11 +64,26 @@ logger = logging.getLogger(__name__)
 # BOT
 # ============================================================
 
+storage = MemoryStorage()
+
 bot = Bot(
     token=BOT_TOKEN
 )
 
-dp = Dispatcher()
+dp = Dispatcher(
+    storage=storage
+)
+
+
+# ============================================================
+# FSM СОСТОЯНИЯ
+# ============================================================
+
+class AdminStates(StatesGroup):
+
+    waiting_points = State()
+    waiting_activity_points = State()
+    waiting_team_name = State()
 
 
 # ============================================================
@@ -78,41 +95,71 @@ def is_admin(user_id: int) -> bool:
 
 
 # ============================================================
-# КЛАВИАТУРА АДМИНА
+# БЕЗОПАСНОЕ РЕДАКТИРОВАНИЕ СООБЩЕНИЯ
+# ============================================================
+
+async def safe_edit_text(
+    message: Message,
+    text: str,
+    reply_markup=None,
+):
+
+    try:
+
+        await message.edit_text(
+            text,
+            reply_markup=reply_markup,
+            parse_mode="HTML",
+        )
+
+    except TelegramBadRequest as e:
+
+        if "message is not modified" not in str(e):
+            raise
+
+
+# ============================================================
+# АДМИНСКАЯ КЛАВИАТУРА
 # ============================================================
 
 def admin_keyboard():
 
     return InlineKeyboardMarkup(
         inline_keyboard=[
+
             [
                 InlineKeyboardButton(
                     text="🏆 Табло",
                     callback_data="scoreboard",
                 )
             ],
+
             [
                 InlineKeyboardButton(
                     text="🏅 За активность",
                     callback_data="activity",
                 ),
+
                 InlineKeyboardButton(
                     text="➕ Добавить баллы",
                     callback_data="add_points",
                 ),
             ],
+
             [
                 InlineKeyboardButton(
                     text="📜 История",
                     callback_data="history",
                 )
             ],
+
             [
                 InlineKeyboardButton(
                     text="✏️ Команды",
                     callback_data="teams",
                 )
             ],
+
             [
                 InlineKeyboardButton(
                     text="🕵️ Выдать задание",
@@ -131,12 +178,14 @@ def captain_keyboard():
 
     return InlineKeyboardMarkup(
         inline_keyboard=[
+
             [
                 InlineKeyboardButton(
                     text="🏆 Табло",
                     callback_data="scoreboard",
                 )
             ],
+
             [
                 InlineKeyboardButton(
                     text="🕵️ Моё задание",
@@ -152,13 +201,19 @@ def captain_keyboard():
 # ============================================================
 
 @dp.message(Command("start"))
-async def start_handler(message: Message):
+async def start_handler(message: Message, state: FSMContext):
+
+    await state.clear()
 
     save_user(
         user_id=message.from_user.id,
         username=message.from_user.username,
         first_name=message.from_user.first_name,
     )
+
+    # --------------------------------------------------------
+    # АДМИН
+    # --------------------------------------------------------
 
     if is_admin(message.from_user.id):
 
@@ -170,6 +225,10 @@ async def start_handler(message: Message):
         )
 
         return
+
+    # --------------------------------------------------------
+    # КАПИТАН
+    # --------------------------------------------------------
 
     user = get_user(
         message.from_user.id
@@ -207,7 +266,7 @@ async def start_handler(message: Message):
 
 
 # ============================================================
-# ВЫБОР КОМАНДЫ
+# ВЫБОР КОМАНДЫ КАПИТАНОМ
 # ============================================================
 
 def team_selection_keyboard():
@@ -239,6 +298,16 @@ async def select_team(
     callback: CallbackQuery
 ):
 
+    # Админу выбор команды капитана не нужен
+    if is_admin(callback.from_user.id):
+
+        await callback.answer(
+            "Эта функция доступна капитанам.",
+            show_alert=True,
+        )
+
+        return
+
     team_id = int(
         callback.data.split(":")[1]
     )
@@ -259,12 +328,14 @@ async def select_team(
         team_id,
     )
 
-    await callback.message.edit_text(
+    await safe_edit_text(
+        callback.message,
+
         f"🧢 <b>Команда выбрана:</b>\n"
         f"«{team['name']}»\n\n"
         "Теперь бот сможет присылать тебе секретные задания.",
-        reply_markup=captain_keyboard(),
-        parse_mode="HTML",
+
+        captain_keyboard(),
     )
 
     await callback.answer()
@@ -315,45 +386,38 @@ async def scoreboard(
     callback: CallbackQuery
 ):
 
-    text = scoreboard_text()
+    if is_admin(callback.from_user.id):
 
-    try:
+        keyboard = admin_keyboard()
 
-        await callback.message.edit_text(
-            text,
-            reply_markup=(
-                admin_keyboard()
-                if is_admin(
-                    callback.from_user.id
-                )
-                else captain_keyboard()
-            ),
-            parse_mode="HTML",
-        )
+    else:
 
-    except TelegramBadRequest as e:
+        keyboard = captain_keyboard()
 
-        if "message is not modified" not in str(e):
-
-            raise
+    await safe_edit_text(
+        callback.message,
+        scoreboard_text(),
+        keyboard,
+    )
 
     await callback.answer()
 
 
 # ============================================================
-# ДОБАВЛЕНИЕ БАЛЛОВ
+# ============================================================
+# ДОБАВИТЬ БАЛЛЫ
+# ============================================================
 # ============================================================
 
 @dp.callback_query(
     F.data == "add_points"
 )
 async def add_points_start(
-    callback: CallbackQuery
+    callback: CallbackQuery,
+    state: FSMContext,
 ):
 
-    if not is_admin(
-        callback.from_user.id
-    ):
+    if not is_admin(callback.from_user.id):
 
         await callback.answer(
             "⛔ Нет доступа",
@@ -362,15 +426,23 @@ async def add_points_start(
 
         return
 
-    await callback.message.edit_text(
+    await state.clear()
+
+    await safe_edit_text(
+        callback.message,
+
         "➕ <b>Добавить баллы</b>\n\n"
         "Выбери команду:",
-        reply_markup=points_team_keyboard(),
-        parse_mode="HTML",
+
+        points_team_keyboard(),
     )
 
     await callback.answer()
 
+
+# ============================================================
+# ВЫБОР КОМАНДЫ ДЛЯ РУЧНОГО НАЧИСЛЕНИЯ
+# ============================================================
 
 def points_team_keyboard():
 
@@ -407,12 +479,11 @@ def points_team_keyboard():
     F.data.startswith("points_team:")
 )
 async def points_team(
-    callback: CallbackQuery
+    callback: CallbackQuery,
+    state: FSMContext,
 ):
 
-    if not is_admin(
-        callback.from_user.id
-    ):
+    if not is_admin(callback.from_user.id):
 
         await callback.answer(
             "⛔ Нет доступа",
@@ -427,54 +498,70 @@ async def points_team(
 
     team = get_team(team_id)
 
-    await callback.message.edit_text(
+    if not team:
+
+        await callback.answer(
+            "Команда не найдена",
+            show_alert=True,
+        )
+
+        return
+
+    await state.set_state(
+        AdminStates.waiting_points
+    )
+
+    await state.update_data(
+        points_team_id=team_id
+    )
+
+    await safe_edit_text(
+        callback.message,
+
         f"➕ <b>{team['name']}</b>\n\n"
-        "Теперь отправь мне количество баллов числом.\n\n"
+        "Отправь количество баллов числом.\n\n"
         "Например:\n"
         "<code>150</code>\n"
         "<code>-50</code>",
-        parse_mode="HTML",
-    )
 
-    # Сохраняем временный выбор команды
-    await dp.storage.set_data(
-        bot=bot,
-        chat=callback.from_user.id,
-        data={
-            "points_team_id": team_id
-        }
+        None,
     )
 
     await callback.answer()
 
 
 # ============================================================
-# ТЕКСТ — ВВОД БАЛЛОВ
+# ВВОД РУЧНЫХ БАЛЛОВ
 # ============================================================
 
 @dp.message(
-    F.text.regexp(r"^-?\d+$")
+    AdminStates.waiting_points,
+    F.text,
 )
 async def points_input(
-    message: Message
+    message: Message,
+    state: FSMContext,
 ):
 
-    if not is_admin(
-        message.from_user.id
-    ):
+    if not is_admin(message.from_user.id):
 
         return
 
-    try:
+    text = message.text.strip()
 
-        data = await dp.storage.get_data(
-            bot=bot,
-            chat=message.from_user.id,
+    if not text.lstrip("-").isdigit():
+
+        await message.answer(
+            "❌ Нужно отправить только число.\n\n"
+            "Например: <code>100</code> или <code>-50</code>",
+            parse_mode="HTML",
         )
 
-    except Exception:
+        return
 
-        data = {}
+    points = int(text)
+
+    data = await state.get_data()
 
     team_id = data.get(
         "points_team_id"
@@ -482,20 +569,24 @@ async def points_input(
 
     if not team_id:
 
+        await state.clear()
+
+        await message.answer(
+            "Сессия закончилась. Нажми «Добавить баллы» ещё раз.",
+            reply_markup=admin_keyboard(),
+        )
+
         return
 
-    points = int(
-        message.text
-    )
-
-    team = get_team(
-        team_id
-    )
+    team = get_team(team_id)
 
     if not team:
 
+        await state.clear()
+
         await message.answer(
-            "Команда не найдена."
+            "Команда не найдена.",
+            reply_markup=admin_keyboard(),
         )
 
         return
@@ -509,10 +600,7 @@ async def points_input(
         activity="Ручное начисление",
     )
 
-    await dp.storage.clear(
-        bot=bot,
-        chat=message.from_user.id,
-    )
+    await state.clear()
 
     sign = "+" if points >= 0 else ""
 
@@ -527,7 +615,299 @@ async def points_input(
 
 
 # ============================================================
+# ============================================================
+# ЗА АКТИВНОСТЬ
+# ============================================================
+# ============================================================
+
+@dp.callback_query(
+    F.data == "activity"
+)
+async def activity_handler(
+    callback: CallbackQuery,
+    state: FSMContext,
+):
+
+    if not is_admin(callback.from_user.id):
+
+        await callback.answer(
+            "⛔ Нет доступа",
+            show_alert=True,
+        )
+
+        return
+
+    await state.clear()
+
+    await safe_edit_text(
+        callback.message,
+
+        "🏅 <b>За активность</b>\n\n"
+        "Выбери команду:",
+
+        activity_team_keyboard(),
+    )
+
+    await callback.answer()
+
+
+# ============================================================
+# КОМАНДЫ ДЛЯ АКТИВНОСТИ
+# ============================================================
+
+def activity_team_keyboard():
+
+    teams = get_teams()
+
+    rows = []
+
+    for team in teams:
+
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=team["name"],
+                    callback_data=f"activity_team:{team['id']}",
+                )
+            ]
+        )
+
+    rows.append(
+        [
+            InlineKeyboardButton(
+                text="⬅️ Назад",
+                callback_data="admin_home",
+            )
+        ]
+    )
+
+    return InlineKeyboardMarkup(
+        inline_keyboard=rows
+    )
+
+
+@dp.callback_query(
+    F.data.startswith("activity_team:")
+)
+async def activity_team(
+    callback: CallbackQuery,
+    state: FSMContext,
+):
+
+    if not is_admin(callback.from_user.id):
+
+        await callback.answer(
+            "⛔ Нет доступа",
+            show_alert=True,
+        )
+
+        return
+
+    team_id = int(
+        callback.data.split(":")[1]
+    )
+
+    team = get_team(team_id)
+
+    if not team:
+
+        await callback.answer(
+            "Команда не найдена",
+            show_alert=True,
+        )
+
+        return
+
+    await state.set_state(
+        AdminStates.waiting_activity_points
+    )
+
+    await state.update_data(
+        activity_team_id=team_id
+    )
+
+    await safe_edit_text(
+        callback.message,
+
+        f"🏅 <b>{team['name']}</b>\n\n"
+        "Напиши название активности.\n\n"
+        "Например:\n"
+        "🏓 Пинг-понг\n"
+        "🏐 Волейбол\n"
+        "⚽ Футбол\n"
+        "🎤 Сценка",
+
+        None,
+    )
+
+    await callback.answer()
+
+
+# ============================================================
+# НАЗВАНИЕ АКТИВНОСТИ
+# ============================================================
+
+@dp.message(
+    AdminStates.waiting_activity_points,
+    F.text,
+)
+async def activity_name_input(
+    message: Message,
+    state: FSMContext,
+):
+
+    if not is_admin(message.from_user.id):
+
+        return
+
+    activity = message.text.strip()
+
+    if not activity:
+
+        await message.answer(
+            "❌ Название активности не может быть пустым."
+        )
+
+        return
+
+    data = await state.get_data()
+
+    team_id = data.get(
+        "activity_team_id"
+    )
+
+    if not team_id:
+
+        await state.clear()
+
+        await message.answer(
+            "Сессия закончилась. Нажми «За активность» ещё раз.",
+            reply_markup=admin_keyboard(),
+        )
+
+        return
+
+    await state.update_data(
+        activity_name=activity
+    )
+
+    # Переходим в состояние ожидания количества баллов.
+    await state.set_state(
+        AdminStates.waiting_points
+    )
+
+    await state.update_data(
+        points_team_id=team_id
+    )
+
+    team = get_team(team_id)
+
+    await message.answer(
+        f"🏅 <b>{team['name']}</b>\n\n"
+        f"Активность: <b>{activity}</b>\n\n"
+        "Теперь отправь количество баллов.\n\n"
+        "Например:\n"
+        "<code>100</code>\n"
+        "<code>250</code>\n"
+        "<code>-50</code>",
+        parse_mode="HTML",
+    )
+
+
+# ============================================================
+# ВВОД БАЛЛОВ ЗА АКТИВНОСТЬ
+# ============================================================
+
+@dp.message(
+    AdminStates.waiting_points,
+    F.text,
+)
+async def activity_points_input(
+    message: Message,
+    state: FSMContext,
+):
+
+    if not is_admin(message.from_user.id):
+
+        return
+
+    data = await state.get_data()
+
+    activity_name = data.get(
+        "activity_name"
+    )
+
+    # Если activity_name есть — это начисление
+    # за конкретную активность.
+    if not activity_name:
+
+        # Это обычное ручное начисление.
+        await points_input(
+            message,
+            state,
+        )
+
+        return
+
+    text = message.text.strip()
+
+    if not text.lstrip("-").isdigit():
+
+        await message.answer(
+            "❌ Нужно отправить только число.\n\n"
+            "Например: <code>100</code>",
+            parse_mode="HTML",
+        )
+
+        return
+
+    points = int(text)
+
+    team_id = data.get(
+        "points_team_id"
+    )
+
+    team = get_team(team_id)
+
+    if not team:
+
+        await state.clear()
+
+        await message.answer(
+            "Команда не найдена.",
+            reply_markup=admin_keyboard(),
+        )
+
+        return
+
+    new_score = add_points(
+        team_id=team_id,
+        points=points,
+        user_id=message.from_user.id,
+        username=message.from_user.username,
+        first_name=message.from_user.first_name,
+        activity=activity_name,
+    )
+
+    await state.clear()
+
+    sign = "+" if points >= 0 else ""
+
+    await message.answer(
+        f"✅ <b>Результат записан</b>\n\n"
+        f"🏆 Команда: <b>{team['name']}</b>\n"
+        f"🎯 Активность: <b>{activity_name}</b>\n"
+        f"💰 Изменение: <b>{sign}{points}</b>\n"
+        f"📊 Новый счёт: <b>{new_score}</b>",
+        reply_markup=admin_keyboard(),
+        parse_mode="HTML",
+    )
+
+
+# ============================================================
+# ============================================================
 # ИСТОРИЯ
+# ============================================================
 # ============================================================
 
 @dp.callback_query(
@@ -537,9 +917,7 @@ async def history_handler(
     callback: CallbackQuery
 ):
 
-    if not is_admin(
-        callback.from_user.id
-    ):
+    if not is_admin(callback.from_user.id):
 
         await callback.answer(
             "⛔ Нет доступа",
@@ -568,37 +946,47 @@ async def history_handler(
                 else ""
             )
 
-            username = (
-                f"@{row['username']}"
-                if row["username"]
-                else row["first_name"]
-            )
+            if row["username"]:
+
+                username = (
+                    f"@{row['username']}"
+                )
+
+            elif row["first_name"]:
+
+                username = row["first_name"]
+
+            else:
+
+                username = "Без имени"
 
             activity = (
-                f" — {row['activity']}"
+                f"\n🎯 {row['activity']}"
                 if row["activity"]
                 else ""
             )
 
             text += (
                 f"🕐 {row['created_at']}\n"
-                f"🏆 {row['team_name']}: "
+                f"🏆 <b>{row['team_name']}</b>: "
                 f"<b>{sign}{row['points']}</b>\n"
                 f"👤 {username}"
                 f"{activity}\n\n"
             )
 
-    await callback.message.edit_text(
+    await safe_edit_text(
+        callback.message,
         text,
-        reply_markup=admin_keyboard(),
-        parse_mode="HTML",
+        admin_keyboard(),
     )
 
     await callback.answer()
 
 
 # ============================================================
+# ============================================================
 # КОМАНДЫ
+# ============================================================
 # ============================================================
 
 @dp.callback_query(
@@ -608,9 +996,7 @@ async def teams_handler(
     callback: CallbackQuery
 ):
 
-    if not is_admin(
-        callback.from_user.id
-    ):
+    if not is_admin(callback.from_user.id):
 
         await callback.answer(
             "⛔ Нет доступа",
@@ -631,10 +1017,10 @@ async def teams_handler(
             f"{team['score']} очков\n"
         )
 
-    await callback.message.edit_text(
+    await safe_edit_text(
+        callback.message,
         text,
-        reply_markup=rename_teams_keyboard(),
-        parse_mode="HTML",
+        rename_teams_keyboard(),
     )
 
     await callback.answer()
@@ -671,16 +1057,19 @@ def rename_teams_keyboard():
     )
 
 
+# ============================================================
+# ПЕРЕИМЕНОВАНИЕ
+# ============================================================
+
 @dp.callback_query(
     F.data.startswith("rename:")
 )
 async def rename_start(
-    callback: CallbackQuery
+    callback: CallbackQuery,
+    state: FSMContext,
 ):
 
-    if not is_admin(
-        callback.from_user.id
-    ):
+    if not is_admin(callback.from_user.id):
 
         await callback.answer(
             "⛔ Нет доступа",
@@ -695,18 +1084,30 @@ async def rename_start(
 
     team = get_team(team_id)
 
-    await dp.storage.set_data(
-        bot=bot,
-        chat=callback.from_user.id,
-        data={
-            "rename_team_id": team_id
-        }
+    if not team:
+
+        await callback.answer(
+            "Команда не найдена",
+            show_alert=True,
+        )
+
+        return
+
+    await state.set_state(
+        AdminStates.waiting_team_name
     )
 
-    await callback.message.edit_text(
+    await state.update_data(
+        rename_team_id=team_id
+    )
+
+    await safe_edit_text(
+        callback.message,
+
         f"✏️ Команда: <b>{team['name']}</b>\n\n"
         "Отправь новое название:",
-        parse_mode="HTML",
+
+        None,
     )
 
     await callback.answer()
@@ -716,34 +1117,20 @@ async def rename_start(
 # ОБРАБОТКА НОВОГО НАЗВАНИЯ
 # ============================================================
 
-@dp.message()
-async def text_handler(
-    message: Message
+@dp.message(
+    AdminStates.waiting_team_name,
+    F.text,
+)
+async def rename_input(
+    message: Message,
+    state: FSMContext,
 ):
 
-    if not is_admin(
-        message.from_user.id
-    ):
+    if not is_admin(message.from_user.id):
 
         return
 
-    data = await dp.storage.get_data(
-        bot=bot,
-        chat=message.from_user.id,
-    )
-
-    team_id = data.get(
-        "rename_team_id"
-    )
-
-    if not team_id:
-
-        return
-
-    new_name = (
-        message.text
-        .strip()
-    )
+    new_name = message.text.strip()
 
     if not new_name:
 
@@ -753,26 +1140,42 @@ async def text_handler(
 
         return
 
+    data = await state.get_data()
+
+    team_id = data.get(
+        "rename_team_id"
+    )
+
+    if not team_id:
+
+        await state.clear()
+
+        await message.answer(
+            "Сессия закончилась.",
+            reply_markup=admin_keyboard(),
+        )
+
+        return
+
     rename_team(
         team_id,
         new_name,
     )
 
-    await dp.storage.clear(
-        bot=bot,
-        chat=message.from_user.id,
-    )
+    await state.clear()
 
     await message.answer(
-        f"✅ Команда переименована:\n\n"
-        f"<b>{new_name}</b>",
+        f"✅ <b>Команда переименована</b>\n\n"
+        f"Новое название: <b>{new_name}</b>",
         reply_markup=admin_keyboard(),
         parse_mode="HTML",
     )
 
 
 # ============================================================
-# ВЫДАТЬ ЗАДАНИЕ
+# ============================================================
+# СЕКРЕТНЫЕ ЗАДАНИЯ
+# ============================================================
 # ============================================================
 
 @dp.callback_query(
@@ -782,9 +1185,7 @@ async def issue_mission_handler(
     callback: CallbackQuery
 ):
 
-    if not is_admin(
-        callback.from_user.id
-    ):
+    if not is_admin(callback.from_user.id):
 
         await callback.answer(
             "⛔ Нет доступа",
@@ -795,41 +1196,28 @@ async def issue_mission_handler(
 
     teams = get_teams()
 
-    available_for_all = True
-
-    for team in teams:
-
-        available = get_available_missions(
-            team["id"]
-        )
-
-        if not available:
-
-            available_for_all = False
-            break
-
-    if not available_for_all:
-
-        await callback.message.answer(
-            "⚠️ Для одной или нескольких команд "
-            "закончились уникальные задания."
-        )
-
-        await callback.answer()
-
-        return
-
     sent = 0
-
     failed = 0
 
     for team in teams:
 
+        # ----------------------------------------------------
+        # Берём только задания, которые эта команда
+        # ещё никогда не получала.
+        # ----------------------------------------------------
+
         available = get_available_missions(
             team["id"]
         )
 
         if not available:
+
+            logger.info(
+                "Для команды %s нет доступных заданий",
+                team["id"],
+            )
+
+            failed += 1
 
             continue
 
@@ -837,8 +1225,9 @@ async def issue_mission_handler(
             available
         )
 
-        # Ищем капитана этой команды
-        # среди зарегистрированных пользователей.
+        # ----------------------------------------------------
+        # Ищем капитана команды
+        # ----------------------------------------------------
 
         from database import SessionLocal, User
 
@@ -847,16 +1236,25 @@ async def issue_mission_handler(
             captain = (
                 session.query(User)
                 .filter(
-                    User.team_id
-                    == team["id"]
+                    User.team_id == team["id"]
                 )
                 .first()
             )
 
         if not captain:
 
+            logger.warning(
+                "У команды %s нет капитана",
+                team["id"],
+            )
+
             failed += 1
+
             continue
+
+        # ----------------------------------------------------
+        # Записываем выдачу задания
+        # ----------------------------------------------------
 
         issue_mission(
             mission_id=mission["id"],
@@ -864,13 +1262,24 @@ async def issue_mission_handler(
             user_id=captain.id,
         )
 
+        # ----------------------------------------------------
+        # Сообщение капитану
+        # ----------------------------------------------------
+
         text = (
             "🕵️ <b>СЕКРЕТНОЕ ЗАДАНИЕ</b>\n\n"
+
             f"<b>{mission['title']}</b>\n\n"
+
             f"{mission['description']}\n\n"
-            f"🏆 Награда: <b>+{mission['points']} очков</b>\n\n"
-            "📸 <b>Важно:</b> доказательство выполнения "
-            "необходимо прислать в <b>чат капитанов</b>.\n\n"
+
+            f"🏆 Награда: "
+            f"<b>+{mission['points']} очков</b>\n\n"
+
+            "📸 <b>ВАЖНО:</b>\n"
+            "Доказательство выполнения необходимо "
+            "прислать в <b>чат капитанов</b>.\n\n"
+
             "🤫 Не рассказывайте другим командам "
             "о своём задании."
         )
@@ -888,13 +1297,16 @@ async def issue_mission_handler(
         except Exception as e:
 
             logger.exception(
-                "Не удалось отправить миссию "
-                "капитану %s: %s",
+                "Не удалось отправить задание капитану %s: %s",
                 captain.id,
                 e,
             )
 
             failed += 1
+
+    # --------------------------------------------------------
+    # Результат админу
+    # --------------------------------------------------------
 
     await callback.message.answer(
         f"🕵️ <b>Задания выданы</b>\n\n"
@@ -917,9 +1329,8 @@ async def my_mission_handler(
     callback: CallbackQuery
 ):
 
-    if is_admin(
-        callback.from_user.id
-    ):
+    # Администратору эта функция не нужна
+    if is_admin(callback.from_user.id):
 
         await callback.answer(
             "Эта кнопка доступна капитанам.",
@@ -958,11 +1369,19 @@ async def my_mission_handler(
 
     text = (
         "🕵️ <b>ВАШЕ СЕКРЕТНОЕ ЗАДАНИЕ</b>\n\n"
+
         f"<b>{mission['title']}</b>\n\n"
+
         f"{mission['description']}\n\n"
-        f"🏆 Награда: <b>+{mission['points']} очков</b>\n\n"
+
+        f"🏆 Награда: "
+        f"<b>+{mission['points']} очков</b>\n\n"
+
         "📸 <b>Доказательство выполнения "
-        "пришлите в чат капитанов.</b>"
+        "пришлите в чат капитанов.</b>\n\n"
+
+        "🤫 Не рассказывайте другим командам "
+        "о своём задании."
     )
 
     await callback.message.answer(
@@ -981,12 +1400,11 @@ async def my_mission_handler(
     F.data == "admin_home"
 )
 async def admin_home(
-    callback: CallbackQuery
+    callback: CallbackQuery,
+    state: FSMContext,
 ):
 
-    if not is_admin(
-        callback.from_user.id
-    ):
+    if not is_admin(callback.from_user.id):
 
         await callback.answer(
             "⛔ Нет доступа",
@@ -995,116 +1413,38 @@ async def admin_home(
 
         return
 
-    await callback.message.edit_text(
+    await state.clear()
+
+    await safe_edit_text(
+        callback.message,
+
         "👑 <b>Панель администратора CAMP WARS</b>",
-        reply_markup=admin_keyboard(),
-        parse_mode="HTML",
+
+        admin_keyboard(),
     )
 
     await callback.answer()
 
 
 # ============================================================
-# АКТИВНОСТЬ
+# ЗАЩИТА ОТ НЕИЗВЕСТНЫХ CALLBACK
 # ============================================================
 
-@dp.callback_query(
-    F.data == "activity"
-)
-async def activity_handler(
+@dp.callback_query()
+async def unknown_callback(
     callback: CallbackQuery
 ):
 
-    if not is_admin(
-        callback.from_user.id
-    ):
+    # Любая неизвестная callback-команда
+    # просто игнорируется.
 
-        await callback.answer(
-            "⛔ Нет доступа",
-            show_alert=True,
+    if callback.data:
+
+        logger.warning(
+            "Unknown callback: %s from %s",
+            callback.data,
+            callback.from_user.id,
         )
-
-        return
-
-    await callback.message.edit_text(
-        "🏅 <b>За активность</b>\n\n"
-        "Выбери команду:",
-        reply_markup=activity_team_keyboard(),
-        parse_mode="HTML",
-    )
-
-    await callback.answer()
-
-
-def activity_team_keyboard():
-
-    teams = get_teams()
-
-    rows = []
-
-    for team in teams:
-
-        rows.append(
-            [
-                InlineKeyboardButton(
-                    text=team["name"],
-                    callback_data=f"activity_team:{team['id']}",
-                )
-            ]
-        )
-
-    rows.append(
-        [
-            InlineKeyboardButton(
-                text="⬅️ Назад",
-                callback_data="admin_home",
-            )
-        ]
-    )
-
-    return InlineKeyboardMarkup(
-        inline_keyboard=rows
-    )
-
-
-@dp.callback_query(
-    F.data.startswith("activity_team:")
-)
-async def activity_team(
-    callback: CallbackQuery
-):
-
-    if not is_admin(
-        callback.from_user.id
-    ):
-
-        await callback.answer(
-            "⛔ Нет доступа",
-            show_alert=True,
-        )
-
-        return
-
-    team_id = int(
-        callback.data.split(":")[1]
-    )
-
-    team = get_team(team_id)
-
-    await dp.storage.set_data(
-        bot=bot,
-        chat=callback.from_user.id,
-        data={
-            "points_team_id": team_id,
-            "activity_mode": True,
-        }
-    )
-
-    await callback.message.edit_text(
-        f"🏅 <b>{team['name']}</b>\n\n"
-        "Отправь количество баллов:",
-        parse_mode="HTML",
-    )
 
     await callback.answer()
 
@@ -1118,7 +1458,12 @@ async def main():
     init_database()
 
     logger.info(
-        "Bot started"
+        "CAMP WARS bot started"
+    )
+
+    logger.info(
+        "Admins: %s",
+        ADMIN_IDS,
     )
 
     await dp.start_polling(
@@ -1126,8 +1471,20 @@ async def main():
     )
 
 
+# ============================================================
+# ENTRY POINT
+# ============================================================
+
 if __name__ == "__main__":
 
-    asyncio.run(
-        main()
-    )
+    try:
+
+        asyncio.run(
+            main()
+        )
+
+    except (KeyboardInterrupt, SystemExit):
+
+        logger.info(
+            "Bot stopped"
+        )
