@@ -29,20 +29,15 @@ def init_database():
     connection = get_connection()
     cursor = connection.cursor()
 
-    # Таблица команд
-    cursor.execute(
-        """
+    cursor.execute("""
         CREATE TABLE IF NOT EXISTS teams (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT NOT NULL,
             score INTEGER NOT NULL DEFAULT 0
         )
-        """
-    )
+    """)
 
-    # Таблица истории
-    cursor.execute(
-        """
+    cursor.execute("""
         CREATE TABLE IF NOT EXISTS score_history (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             team_id INTEGER NOT NULL,
@@ -52,12 +47,35 @@ def init_database():
             user_id INTEGER NOT NULL,
             username TEXT,
             first_name TEXT,
+            activity TEXT,
+            result TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
-        """
+    """)
+
+    # Для уже существующей базы добавляем новые колонки,
+    # если их ещё нет.
+    cursor.execute(
+        "PRAGMA table_info(score_history)"
     )
 
-    # Если команд ещё нет — создаём 10 команд
+    columns = {
+        row["name"]
+        for row in cursor.fetchall()
+    }
+
+    if "activity" not in columns:
+        cursor.execute("""
+            ALTER TABLE score_history
+            ADD COLUMN activity TEXT
+        """)
+
+    if "result" not in columns:
+        cursor.execute("""
+            ALTER TABLE score_history
+            ADD COLUMN result TEXT
+        """)
+
     cursor.execute(
         "SELECT COUNT(*) FROM teams"
     )
@@ -66,13 +84,10 @@ def init_database():
 
     if count == 0:
         for team_name in DEFAULT_TEAMS:
-            cursor.execute(
-                """
+            cursor.execute("""
                 INSERT INTO teams (name, score)
                 VALUES (?, 0)
-                """,
-                (team_name,),
-            )
+            """, (team_name,))
 
     connection.commit()
     connection.close()
@@ -82,13 +97,11 @@ def get_teams():
     connection = get_connection()
     cursor = connection.cursor()
 
-    cursor.execute(
-        """
+    cursor.execute("""
         SELECT id, name, score
         FROM teams
         ORDER BY id
-        """
-    )
+    """)
 
     teams = cursor.fetchall()
 
@@ -101,14 +114,11 @@ def get_team(team_id: int):
     connection = get_connection()
     cursor = connection.cursor()
 
-    cursor.execute(
-        """
+    cursor.execute("""
         SELECT id, name, score
         FROM teams
         WHERE id = ?
-        """,
-        (team_id,),
-    )
+    """, (team_id,))
 
     team = cursor.fetchone()
 
@@ -123,19 +133,17 @@ def add_points(
     user_id: int,
     username: str | None,
     first_name: str | None,
+    activity: str | None = None,
+    result: str | None = None,
 ):
     connection = get_connection()
     cursor = connection.cursor()
 
-    # Получаем команду
-    cursor.execute(
-        """
+    cursor.execute("""
         SELECT id, name, score
         FROM teams
         WHERE id = ?
-        """,
-        (team_id,),
-    )
+    """, (team_id,))
 
     team = cursor.fetchone()
 
@@ -145,22 +153,16 @@ def add_points(
 
     new_score = team["score"] + points
 
-    # Обновляем счёт
-    cursor.execute(
-        """
+    cursor.execute("""
         UPDATE teams
         SET score = ?
         WHERE id = ?
-        """,
-        (
-            new_score,
-            team_id,
-        ),
-    )
+    """, (
+        new_score,
+        team_id,
+    ))
 
-    # Записываем историю
-    cursor.execute(
-        """
+    cursor.execute("""
         INSERT INTO score_history (
             team_id,
             team_name,
@@ -168,20 +170,22 @@ def add_points(
             new_score,
             user_id,
             username,
-            first_name
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            team_id,
-            team["name"],
-            points,
-            new_score,
-            user_id,
-            username,
             first_name,
-        ),
-    )
+            activity,
+            result
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (
+        team_id,
+        team["name"],
+        points,
+        new_score,
+        user_id,
+        username,
+        first_name,
+        activity,
+        result,
+    ))
 
     connection.commit()
     connection.close()
@@ -196,28 +200,22 @@ def rename_team(
     connection = get_connection()
     cursor = connection.cursor()
 
-    cursor.execute(
-        """
+    cursor.execute("""
         UPDATE teams
         SET name = ?
         WHERE id = ?
-        """,
-        (
-            new_name,
-            team_id,
-        ),
-    )
+    """, (
+        new_name,
+        team_id,
+    ))
 
     connection.commit()
 
-    cursor.execute(
-        """
+    cursor.execute("""
         SELECT id, name, score
         FROM teams
         WHERE id = ?
-        """,
-        (team_id,),
-    )
+    """, (team_id,))
 
     team = cursor.fetchone()
 
@@ -226,12 +224,11 @@ def rename_team(
     return team
 
 
-def get_history(limit: int = 30):
+def get_history(limit: int = 50):
     connection = get_connection()
     cursor = connection.cursor()
 
-    cursor.execute(
-        """
+    cursor.execute("""
         SELECT
             id,
             team_id,
@@ -241,13 +238,13 @@ def get_history(limit: int = 30):
             user_id,
             username,
             first_name,
+            activity,
+            result,
             created_at
         FROM score_history
         ORDER BY id DESC
         LIMIT ?
-        """,
-        (limit,),
-    )
+    """, (limit,))
 
     history = cursor.fetchall()
 
