@@ -1,4 +1,3 @@
-```python
 import sqlite3
 from pathlib import Path
 
@@ -255,4 +254,3 @@ def get_history(limit: int = 30):
     connection.close()
 
     return history
-```
