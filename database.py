@@ -9,6 +9,7 @@ from sqlalchemy import (
     String,
     DateTime,
     Text,
+    UniqueConstraint,
 )
 from sqlalchemy.orm import declarative_base, sessionmaker
 
@@ -16,23 +17,22 @@ from sqlalchemy.orm import declarative_base, sessionmaker
 # ============================================================
 # DATABASE
 # ============================================================
+# Никакого DATABASE_URL / PostgreSQL не требуется.
+# База хранится в локальном SQLite-файле рядом с app.py.
+#
+# Для Render важно понимать: на бесплатном инстансе локальный
+# файл может быть удалён при новом deploy/restart. Для тестов
+# и текущей версии это работает без внешней БД.
+# ============================================================
 
-# Если DATABASE_URL задан — используем его.
-# Если не задан — используем локальную SQLite-базу.
-DATABASE_URL = os.getenv(
-    "DATABASE_URL",
-    "sqlite:///./database.db",
+DATABASE_PATH = os.getenv(
+    "SQLITE_DATABASE_PATH",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "camp_wars.db"),
 )
 
-# SQLite не требует отдельного сервера базы данных.
-# Файл database.db будет создан автоматически.
-
 engine = create_engine(
-    DATABASE_URL,
-    connect_args={
-        "check_same_thread": False
-    } if DATABASE_URL.startswith("sqlite") else {},
-    pool_pre_ping=True,
+    f"sqlite:///{DATABASE_PATH}",
+    connect_args={"check_same_thread": False},
 )
 
 SessionLocal = sessionmaker(
@@ -50,21 +50,9 @@ Base = declarative_base()
 class Team(Base):
     __tablename__ = "teams"
 
-    id = Column(
-        Integer,
-        primary_key=True,
-    )
-
-    name = Column(
-        String(100),
-        nullable=False,
-    )
-
-    score = Column(
-        Integer,
-        default=0,
-        nullable=False,
-    )
+    id = Column(Integer, primary_key=True)
+    name = Column(String(100), nullable=False)
+    score = Column(Integer, default=0, nullable=False)
 
 
 # ============================================================
@@ -74,25 +62,10 @@ class Team(Base):
 class User(Base):
     __tablename__ = "users"
 
-    id = Column(
-        BigInteger,
-        primary_key=True,
-    )
-
-    username = Column(
-        String(100),
-        nullable=True,
-    )
-
-    first_name = Column(
-        String(100),
-        nullable=True,
-    )
-
-    team_id = Column(
-        Integer,
-        nullable=True,
-    )
+    id = Column(BigInteger, primary_key=True)
+    username = Column(String(100), nullable=True)
+    first_name = Column(String(100), nullable=True)
+    team_id = Column(Integer, nullable=True)
 
 
 # ============================================================
@@ -102,56 +75,18 @@ class User(Base):
 class PointsHistory(Base):
     __tablename__ = "points_history"
 
-    id = Column(
-        Integer,
-        primary_key=True,
-    )
+    id = Column(Integer, primary_key=True)
+    team_id = Column(Integer, nullable=False)
+    team_name = Column(String(100), nullable=False)
+    points = Column(Integer, nullable=False)
+    new_score = Column(Integer, nullable=False)
 
-    team_id = Column(
-        Integer,
-        nullable=False,
-    )
+    user_id = Column(BigInteger, nullable=False)
+    username = Column(String(100), nullable=True)
+    first_name = Column(String(100), nullable=True)
 
-    team_name = Column(
-        String(100),
-        nullable=False,
-    )
-
-    points = Column(
-        Integer,
-        nullable=False,
-    )
-
-    new_score = Column(
-        Integer,
-        nullable=False,
-    )
-
-    user_id = Column(
-        BigInteger,
-        nullable=False,
-    )
-
-    username = Column(
-        String(100),
-        nullable=True,
-    )
-
-    first_name = Column(
-        String(100),
-        nullable=True,
-    )
-
-    activity = Column(
-        String(255),
-        nullable=True,
-    )
-
-    result = Column(
-        String(255),
-        nullable=True,
-    )
-
+    activity = Column(String(255), nullable=True)
+    result = Column(String(255), nullable=True)
     created_at = Column(
         DateTime,
         default=datetime.utcnow,
@@ -166,26 +101,10 @@ class PointsHistory(Base):
 class Mission(Base):
     __tablename__ = "missions"
 
-    id = Column(
-        Integer,
-        primary_key=True,
-    )
-
-    title = Column(
-        String(255),
-        nullable=False,
-    )
-
-    description = Column(
-        Text,
-        nullable=False,
-    )
-
-    points = Column(
-        Integer,
-        nullable=False,
-    )
-
+    id = Column(Integer, primary_key=True)
+    title = Column(String(255), nullable=False)
+    description = Column(Text, nullable=False)
+    points = Column(Integer, nullable=False)
     created_at = Column(
         DateTime,
         default=datetime.utcnow,
@@ -200,25 +119,12 @@ class Mission(Base):
 class IssuedMission(Base):
     __tablename__ = "issued_missions"
 
-    id = Column(
-        Integer,
-        primary_key=True,
-    )
+    id = Column(Integer, primary_key=True)
 
-    mission_id = Column(
-        Integer,
-        nullable=False,
-    )
+    mission_id = Column(Integer, nullable=False)
+    team_id = Column(Integer, nullable=False)
 
-    team_id = Column(
-        Integer,
-        nullable=False,
-    )
-
-    issued_to_user_id = Column(
-        BigInteger,
-        nullable=True,
-    )
+    issued_to_user_id = Column(BigInteger, nullable=True)
 
     status = Column(
         String(50),
@@ -232,9 +138,16 @@ class IssuedMission(Base):
         nullable=False,
     )
 
-    completed_at = Column(
-        DateTime,
-        nullable=True,
+    completed_at = Column(DateTime, nullable=True)
+
+    # Одна и та же миссия не может быть выдана одной
+    # команде дважды.
+    __table_args__ = (
+        UniqueConstraint(
+            "mission_id",
+            "team_id",
+            name="uq_mission_team",
+        ),
     )
 
 
@@ -243,23 +156,12 @@ class IssuedMission(Base):
 # ============================================================
 
 def init_database():
-
-    Base.metadata.create_all(
-        bind=engine
-    )
-
-    # Если команд ещё нет —
-    # создаём 10 стандартных команд.
+    Base.metadata.create_all(bind=engine)
 
     with SessionLocal() as session:
-
-        existing = (
-            session.query(Team)
-            .count()
-        )
+        existing = session.query(Team).count()
 
         if existing == 0:
-
             default_names = [
                 "Команда 1",
                 "Команда 2",
@@ -274,7 +176,6 @@ def init_database():
             ]
 
             for name in default_names:
-
                 session.add(
                     Team(
                         name=name,
@@ -290,9 +191,7 @@ def init_database():
 # ============================================================
 
 def get_teams():
-
     with SessionLocal() as session:
-
         teams = (
             session.query(Team)
             .order_by(Team.id)
@@ -310,14 +209,10 @@ def get_teams():
 
 
 def get_team(team_id):
-
     with SessionLocal() as session:
-
         team = (
             session.query(Team)
-            .filter(
-                Team.id == team_id
-            )
+            .filter(Team.id == team_id)
             .first()
         )
 
@@ -331,18 +226,11 @@ def get_team(team_id):
         }
 
 
-def rename_team(
-    team_id,
-    new_name,
-):
-
+def rename_team(team_id, new_name):
     with SessionLocal() as session:
-
         team = (
             session.query(Team)
-            .filter(
-                Team.id == team_id
-            )
+            .filter(Team.id == team_id)
             .first()
         )
 
@@ -350,7 +238,6 @@ def rename_team(
             return None
 
         team.name = new_name
-
         session.commit()
 
         return {
@@ -373,14 +260,10 @@ def add_points(
     activity=None,
     result=None,
 ):
-
     with SessionLocal() as session:
-
         team = (
             session.query(Team)
-            .filter(
-                Team.id == team_id
-            )
+            .filter(Team.id == team_id)
             .first()
         )
 
@@ -402,7 +285,6 @@ def add_points(
         )
 
         session.add(history)
-
         session.commit()
 
         return team.score
@@ -412,19 +294,11 @@ def add_points(
 # ИСТОРИЯ
 # ============================================================
 
-def get_history(
-    limit=30,
-):
-
+def get_history(limit=30):
     with SessionLocal() as session:
-
         rows = (
-            session.query(
-                PointsHistory
-            )
-            .order_by(
-                PointsHistory.id.desc()
-            )
+            session.query(PointsHistory)
+            .order_by(PointsHistory.id.desc())
             .limit(limit)
             .all()
         )
@@ -458,46 +332,32 @@ def save_user(
     username=None,
     first_name=None,
 ):
-
     with SessionLocal() as session:
-
         user = (
             session.query(User)
-            .filter(
-                User.id == user_id
-            )
+            .filter(User.id == user_id)
             .first()
         )
 
         if not user:
-
             user = User(
                 id=user_id,
                 username=username,
                 first_name=first_name,
             )
-
             session.add(user)
-
         else:
-
             user.username = username
             user.first_name = first_name
 
         session.commit()
 
 
-def get_user(
-    user_id,
-):
-
+def get_user(user_id):
     with SessionLocal() as session:
-
         user = (
             session.query(User)
-            .filter(
-                User.id == user_id
-            )
+            .filter(User.id == user_id)
             .first()
         )
 
@@ -512,32 +372,21 @@ def get_user(
         }
 
 
-def set_user_team(
-    user_id,
-    team_id,
-):
-
+def set_user_team(user_id, team_id):
     with SessionLocal() as session:
-
         user = (
             session.query(User)
-            .filter(
-                User.id == user_id
-            )
+            .filter(User.id == user_id)
             .first()
         )
 
         if not user:
-
             user = User(
                 id=user_id,
                 team_id=team_id,
             )
-
             session.add(user)
-
         else:
-
             user.team_id = team_id
 
         session.commit()
@@ -547,14 +396,8 @@ def set_user_team(
 # МИССИИ
 # ============================================================
 
-def create_mission(
-    title,
-    description,
-    points,
-):
-
+def create_mission(title, description, points):
     with SessionLocal() as session:
-
         mission = Mission(
             title=title,
             description=description,
@@ -562,16 +405,13 @@ def create_mission(
         )
 
         session.add(mission)
-
         session.commit()
 
         return mission.id
 
 
 def get_missions():
-
     with SessionLocal() as session:
-
         missions = (
             session.query(Mission)
             .order_by(Mission.id)
@@ -589,17 +429,11 @@ def get_missions():
         ]
 
 
-def get_mission(
-    mission_id,
-):
-
+def get_mission(mission_id):
     with SessionLocal() as session:
-
         mission = (
             session.query(Mission)
-            .filter(
-                Mission.id == mission_id
-            )
+            .filter(Mission.id == mission_id)
             .first()
         )
 
@@ -614,27 +448,13 @@ def get_mission(
         }
 
 
-# ============================================================
-# ПРОВЕРКА:
-# ВЫДАВАЛОСЬ ЛИ ЗАДАНИЕ КОМАНДЕ
-# ============================================================
-
-def mission_was_issued(
-    mission_id,
-    team_id,
-):
-
+def mission_was_issued(mission_id, team_id):
     with SessionLocal() as session:
-
         exists = (
-            session.query(
-                IssuedMission
-            )
+            session.query(IssuedMission)
             .filter(
-                IssuedMission.mission_id
-                == mission_id,
-                IssuedMission.team_id
-                == team_id,
+                IssuedMission.mission_id == mission_id,
+                IssuedMission.team_id == team_id,
             )
             .first()
         )
@@ -642,29 +462,13 @@ def mission_was_issued(
         return exists is not None
 
 
-# ============================================================
-# ВЫДАТЬ МИССИЮ
-# ============================================================
-
-def issue_mission(
-    mission_id,
-    team_id,
-    user_id=None,
-):
-
+def issue_mission(mission_id, team_id, user_id=None):
     with SessionLocal() as session:
-
-        # Дополнительная защита от повторной выдачи.
-
         existing = (
-            session.query(
-                IssuedMission
-            )
+            session.query(IssuedMission)
             .filter(
-                IssuedMission.mission_id
-                == mission_id,
-                IssuedMission.team_id
-                == team_id,
+                IssuedMission.mission_id == mission_id,
+                IssuedMission.team_id == team_id,
             )
             .first()
         )
@@ -680,30 +484,16 @@ def issue_mission(
         )
 
         session.add(issued)
-
         session.commit()
 
         return issued.id
 
 
-# ============================================================
-# ДОСТУПНЫЕ МИССИИ ДЛЯ КОМАНДЫ
-# ============================================================
-
-def get_available_missions(
-    team_id,
-):
-
+def get_available_missions(team_id):
     with SessionLocal() as session:
-
         issued_ids = (
-            session.query(
-                IssuedMission.mission_id
-            )
-            .filter(
-                IssuedMission.team_id
-                == team_id
-            )
+            session.query(IssuedMission.mission_id)
+            .filter(IssuedMission.team_id == team_id)
             .all()
         )
 
@@ -718,11 +508,8 @@ def get_available_missions(
         )
 
         if issued_ids:
-
             query = query.filter(
-                ~Mission.id.in_(
-                    issued_ids
-                )
+                ~Mission.id.in_(issued_ids)
             )
 
         missions = query.all()
@@ -738,29 +525,15 @@ def get_available_missions(
         ]
 
 
-# ============================================================
-# АКТИВНЫЕ МИССИИ КОМАНДЫ
-# ============================================================
-
-def get_active_mission_for_team(
-    team_id,
-):
-
+def get_active_mission_for_team(team_id):
     with SessionLocal() as session:
-
         issued = (
-            session.query(
-                IssuedMission
-            )
+            session.query(IssuedMission)
             .filter(
-                IssuedMission.team_id
-                == team_id,
-                IssuedMission.status
-                == "active",
+                IssuedMission.team_id == team_id,
+                IssuedMission.status == "active",
             )
-            .order_by(
-                IssuedMission.id.desc()
-            )
+            .order_by(IssuedMission.id.desc())
             .first()
         )
 
@@ -769,10 +542,7 @@ def get_active_mission_for_team(
 
         mission = (
             session.query(Mission)
-            .filter(
-                Mission.id
-                == issued.mission_id
-            )
+            .filter(Mission.id == issued.mission_id)
             .first()
         )
 
@@ -793,23 +563,11 @@ def get_active_mission_for_team(
         }
 
 
-# ============================================================
-# ВСЕ ВЫДАННЫЕ МИССИИ
-# ============================================================
-
-def get_issued_missions(
-    limit=50,
-):
-
+def get_issued_missions(limit=50):
     with SessionLocal() as session:
-
         rows = (
-            session.query(
-                IssuedMission
-            )
-            .order_by(
-                IssuedMission.id.desc()
-            )
+            session.query(IssuedMission)
+            .order_by(IssuedMission.id.desc())
             .limit(limit)
             .all()
         )
@@ -817,22 +575,15 @@ def get_issued_missions(
         result = []
 
         for row in rows:
-
             mission = (
                 session.query(Mission)
-                .filter(
-                    Mission.id
-                    == row.mission_id
-                )
+                .filter(Mission.id == row.mission_id)
                 .first()
             )
 
             team = (
                 session.query(Team)
-                .filter(
-                    Team.id
-                    == row.team_id
-                )
+                .filter(Team.id == row.team_id)
                 .first()
             )
 
